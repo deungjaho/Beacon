@@ -118,13 +118,13 @@ Icons and colors match the previous agent-tracker implementation:
 
 | Segment | Icon | Color (bg) |
 |---|---|---|
-| CPU | `` | green/yellow/red by usage |
-| Memory pressure | `` | green/yellow/red by pressure |
-| Pane memory | `` | `#7CB8BB` |
+| CPU | `` | green/yellow/red by usage |
+| Memory pressure | `` | green/yellow/red by pressure |
+| Pane memory | `` | `#7CB8BB` |
 | Window memory | `󰖲` | `#5A8A8A` |
-| Session memory | `` | `#4A7A7A` |
+| Session memory | `` | `#4A7A7A` |
 | Total tmux memory | `󰍛` | `#3A6A6A` |
-| Process count | `` | `#B48EAD` |
+| Process count | `` | `#B48EAD` |
 | Agent working | `●` | `#F0DFAF` |
 | Agent completed | `✓` | `#7F9F7F` |
 | Agent waiting | `⚠` | `#CC9393` |

@@ -110,7 +110,7 @@ func TestRenderCPU(t *testing.T) {
 	m := collector.Metrics{CPUPercent: 45, CPUOK: true}
 	args := Args{Width: 160, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, st, m)
-	if !strings.Contains(out, "") {
+	if !strings.Contains(out, "\uf4bc") {
 		t.Fatalf("missing CPU icon: %q", out)
 	}
 	if !strings.Contains(out, "45%") {
@@ -126,7 +126,7 @@ func TestRenderMemPressure(t *testing.T) {
 	m := collector.Metrics{MemPressure: 70, MemPressureOK: true}
 	args := Args{Width: 160, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, st, m)
-	if !strings.Contains(out, "") {
+	if !strings.Contains(out, "\uf080") {
 		t.Fatalf("missing pressure icon: %q", out)
 	}
 	if !strings.Contains(out, "70%") {
@@ -142,7 +142,7 @@ func TestRenderProcCount(t *testing.T) {
 	m := collector.Metrics{ProcCount: 230, ProcCountOK: true}
 	args := Args{Width: 160, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, st, m)
-	if !strings.Contains(out, "") {
+	if !strings.Contains(out, "\uf46c") {
 		t.Fatalf("missing proc icon: %q", out)
 	}
 	if !strings.Contains(out, "230") {
@@ -160,7 +160,7 @@ func TestRenderPaneMemory(t *testing.T) {
 	}
 	args := Args{Width: 160, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, st, m)
-	if !strings.Contains(out, "") {
+	if !strings.Contains(out, "\ue266") {
 		t.Fatalf("missing pane mem icon: %q", out)
 	}
 	if !strings.Contains(out, "120M") {
@@ -177,19 +177,19 @@ func TestRenderWindowSessionTotalMemory(t *testing.T) {
 	}
 	args := Args{Width: 160, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, st, m)
-	if !strings.Contains(out, "󰖲") {
+	if !strings.Contains(out, "\U000F05B2") {
 		t.Fatalf("missing window mem icon: %q", out)
 	}
 	if !strings.Contains(out, "340M") {
 		t.Fatalf("missing window mem value: %q", out)
 	}
-	if !strings.Contains(out, "") {
+	if !strings.Contains(out, "\uebc8") {
 		t.Fatalf("missing session mem icon: %q", out)
 	}
 	if !strings.Contains(out, "1.2G") {
 		t.Fatalf("missing session mem value: %q", out)
 	}
-	if !strings.Contains(out, "󰍛") {
+	if !strings.Contains(out, "\U000F035B") {
 		t.Fatalf("missing total mem icon: %q", out)
 	}
 	if !strings.Contains(out, "3.4G") {
@@ -219,7 +219,7 @@ func TestRenderNarrowWidthDropsNonPriority(t *testing.T) {
 	if !strings.Contains(out, "busy") {
 		t.Fatalf("narrow: missing agent: %q", out)
 	}
-	if !strings.Contains(out, "") {
+	if !strings.Contains(out, "\uf080") {
 		t.Fatalf("narrow: missing pressure: %q", out)
 	}
 	if !strings.Contains(out, "100M") {
@@ -255,7 +255,7 @@ func TestRenderPowerlineFormat(t *testing.T) {
 		t.Fatalf("expected right cap suffix: %q", out)
 	}
 	// Should contain the separator
-	if !strings.Contains(out, "") {
+	if !strings.Contains(out, "\ue0b2") {
 		t.Fatalf("expected separator: %q", out)
 	}
 }
@@ -278,7 +278,7 @@ func TestRenderAllSegmentsTogether(t *testing.T) {
 	args := Args{Width: 200, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, st, m)
 	// All segments should be present at wide width
-	for _, want := range []string{"busy", "45%", "", "", "120M", "󰖲", "340M", "", "1.2G", "󰍛", "3.4G", "", "230"} {
+	for _, want := range []string{"busy", "45%", "\uf4bc", "\uf080", "120M", "\U000F05B2", "340M", "\uebc8", "1.2G", "\U000F035B", "3.4G", "\uf46c", "230"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("wide render missing %q: %q", want, out)
 		}

@@ -32,13 +32,13 @@ type Segment struct {
 }
 
 const (
-	iconCPU         = ""
-	iconPaneMem     = ""
-	iconWindowMem   = "󰖲"
-	iconSessionMem  = ""
-	iconTotalMem    = "󰍛"
-	iconProcCount   = ""
-	iconMemPressure = ""
+	iconCPU         = "\uf4bc"
+	iconPaneMem     = "\ue266"
+	iconWindowMem   = "\U000F05B2"
+	iconSessionMem  = "\uebc8"
+	iconTotalMem    = "\U000F035B"
+	iconProcCount   = "\uf46c"
+	iconMemPressure = "\uf080"
 
 	minWidth = 80
 
@@ -305,7 +305,7 @@ func stripTmuxEscapes(s string) string {
 }
 
 func formatPowerline(statusBG string, segs []Segment) string {
-	const separator = ""
+	const separator = "\ue0b2"
 	const rightCap = "█"
 	prevBG := statusBG
 	var b strings.Builder
