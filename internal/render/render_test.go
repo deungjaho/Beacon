@@ -249,14 +249,42 @@ func TestRenderPowerlineFormat(t *testing.T) {
 	st := state.NewState()
 	st.Panes["%1"] = state.PaneRecord{Status: "working", Summary: "x", Window: "@1", Session: "s", Time: 100}
 	args := Args{Width: 160, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
-	out := Render(args, st, collector.Metrics{})
-	// Should end with the right cap
-	if !strings.HasSuffix(out, "█") {
-		t.Fatalf("expected right cap suffix: %q", out)
+	out := []byte(Render(args, st, collector.Metrics{}))
+
+	// Right cap: U+2588 (█) must be the last byte sequence.
+	// Use \u escape so the assertion cannot be stripped to an empty string
+	// by editors that remove PUA codepoints — the original bug that made
+	// this test a no-op.
+	capBytes := exactBytes('\u2588')
+	if !bytesHasSuffix(out, capBytes) {
+		t.Fatalf("expected right cap bytes %x at end, got %x in %q", capBytes, out[len(out)-len(capBytes):], out)
 	}
-	// Should contain the separator
-	if !strings.Contains(out, "\ue0b2") {
-		t.Fatalf("expected separator: %q", out)
+
+	// Powerline separator: U+E0B2 () must appear at least once.
+	// The original test used a literal PUA character that was stripped to
+	// "", and strings.Contains(s, "") always returns true, so the check
+	// passed even when the renderer emitted no separator at all.  Use \u
+	// escape and count occurrences to guard against this.
+	sepBytes := exactBytes('\uE0B2')
+	sepCount := countBytesOccurrences(out, sepBytes)
+	if sepCount < 1 {
+		t.Fatalf("expected at least 1 Powerline separator (U+E0B2), got %d in %q", sepCount, out)
+	}
+
+	// The separator must sit between two different background colors,
+	// not just appear anywhere.  With a single agent segment (bg #F0DFAF)
+	// and status-bg black, the first separator transitions black→#F0DFAF.
+	boundary := []byte("#[fg=#F0DFAF,bg=black]")
+	boundary = append(boundary, sepBytes...)
+	boundary = append(boundary, []byte("#[fg=#1d1f21,bg=#F0DFAF")...)
+	assertBytesIn(t, "separator-from-statusbg-to-agent", out, boundary)
+
+	// The right cap must transition from the last segment bg back to
+	// status-bg.
+	capBoundary := []byte("#[fg=#F0DFAF,bg=black]")
+	capBoundary = append(capBoundary, capBytes...)
+	if !bytesHasSuffix(out, capBoundary) {
+		t.Fatalf("expected right cap boundary %q at end, got %q", capBoundary, out[len(out)-len(capBoundary):])
 	}
 }
 
