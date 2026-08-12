@@ -66,6 +66,8 @@ report() {
       '{pane:$pane,session:$session,window:$window,summary:$summary,time:$time}')
     "$STATE" set-last "$last"
   fi
+  # Event-driven best effort cleanup; the tmux render path stays read-only.
+  "$STATE" cleanup >/dev/null 2>&1 || true
 }
 
 doctor() {

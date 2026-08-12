@@ -14,8 +14,6 @@ if [[ "$width" =~ ^[0-9]+$ ]] && (( width < ${BEACON_MIN_WIDTH:-80} )); then
   exit 0
 fi
 
-# Cleanup is best-effort and must never delay or break tmux rendering.
-"$STATE" cleanup >/dev/null 2>&1 || true
 state='{"panes":{}}'
 if [[ -f "$STATE_FILE" ]]; then
   state=$(cat "$STATE_FILE" 2>/dev/null || printf '{"panes":{}}')

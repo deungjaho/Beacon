@@ -28,7 +28,7 @@ case "${1:-}" in
       '#{pane_id}') printf '%s\n' "$target" ;;
     esac
     ;;
-  list-panes) printf '%%1\n%%2\n' ;;
+  list-panes) for i in $(seq 1 20); do printf '%%%s\n' "$i"; done ;;
   switch-client|select-pane) printf '%s\n' "$*" >>"${BEACON_TEST_TMUX_LOG:-/dev/null}" ;;
 esac
 FAKE
@@ -66,6 +66,12 @@ assert_contains "$rendered" 'all tests passed' 'tmux completed rendering'
 assert_contains "$rendered" '#7F9F7F' 'tmux completed color'
 pass 'tmux renderer uses local state'
 
+before_hash=$(cksum "$BEACON_STATE_DIR/panes.json")
+BEACON_NOW=100 BEACON_SHOW_SYSTEM=0 "$ROOT/bin/beacon" status-tmux 160 black test-session 1 '%1' '@1' >/dev/null
+after_hash=$(cksum "$BEACON_STATE_DIR/panes.json")
+assert_eq "$after_hash" "$before_hash" 'statusline state hash'
+pass 'tmux renderer is read-only'
+
 BEACON_TEST_TMUX_LOG="$TMP/tmux.log" "$ROOT/bin/beacon" jump
 assert_contains "$(cat "$TMP/tmux.log")" 'test-session' 'jump session'
 assert_contains "$(cat "$TMP/tmux.log")" '%1' 'jump pane'
@@ -89,4 +95,4 @@ ln -s "$ROOT/bin/beacon" "$TMP/prefix/bin/beacon"
 "$TMP/prefix/bin/beacon" status >/dev/null
 pass 'CLI resolves installation symlink'
 
-printf '1..9\n'
+printf '1..10\n'
