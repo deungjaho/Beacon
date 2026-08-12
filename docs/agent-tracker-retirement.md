@@ -39,9 +39,29 @@ active execution path. Per-host pre-cutover configuration is stored under:
 ~/.local/state/beacon/migrations/20260812-beacon-cutover/
 ```
 
-Do not remove the retained material until ordinary Mac-only and Omarchy-only
-work has completed at least one full session lifecycle with Beacon. Removal is
-a separate cleanup task, not part of the cutover.
+The previous Bash/jq shell implementation of Beacon is preserved under
+`~/.local/lib/beacon/shell-backup/` during the Go binary release. To roll
+back, replace the Go binary with the shell wrapper and restart the daemon.
+Remove the shell backup once the Go binary has run a full session lifecycle
+without regression.
+
+## Go binary upgrade (2026-08-12)
+
+Beacon is now a single Go binary with a background daemon:
+
+- `beacon daemon` samples host metrics (CPU, memory pressure, process count,
+  per-pane/window/session/total tmux memory) every 4 seconds and writes an
+  atomic snapshot cache.
+- `beacon status-tmux` reads the snapshot cache and agent state in-process;
+  no subprocess calls, p95 < 5ms.
+- `beacon report` writes via Unix socket when the daemon is running, with
+  atomic file fallback when it is not.
+- launchd (macOS) and systemd (Linux) user services manage the daemon
+  lifecycle with automatic restart.
+- The shell scripts (`bin/beacon`, `lib/*.sh`, `tmux/*.sh`, `hooks/*.sh`)
+  are retained in the repository for rollback but are no longer the primary
+  execution path. Remove them in a separate cleanup once the Go binary has
+  been verified across a full session lifecycle on both Mac and Omarchy.
 
 ## Regression checks
 
