@@ -41,6 +41,19 @@ Claude Code hooks:
 }
 ```
 
+Codex can use the same prompt/stop hooks and the permission hook in
+`~/.codex/hooks.json`; each Beacon entry may coexist with other integrations:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [{"hooks": [{"type": "command", "command": "beacon hook prompt"}]}],
+    "Stop": [{"hooks": [{"type": "command", "command": "beacon hook stop"}]}],
+    "PermissionRequest": [{"hooks": [{"type": "command", "command": "beacon hook permission"}]}]
+  }
+}
+```
+
 tmux:
 
 ```tmux

@@ -87,6 +87,10 @@ pass 'cleanup expires completion but retains live work'
 printf '{broken' | "$ROOT/bin/beacon" hook prompt
 pass 'malformed hook input is non-fatal'
 
+TMUX_PANE='%1' BEACON_NOW=100 printf '{"tool_name":"shell"}' | TMUX_PANE='%1' BEACON_NOW=100 "$ROOT/bin/beacon" hook permission
+assert_eq "$(jq -r '.panes["%1"].status' "$BEACON_STATE_DIR/panes.json")" waiting 'permission waiting status'
+pass 'permission hook marks waiting'
+
 "$ROOT/bin/beacon" doctor >/dev/null
 pass 'doctor validates dependencies and state'
 
@@ -95,4 +99,4 @@ ln -s "$ROOT/bin/beacon" "$TMP/prefix/bin/beacon"
 "$TMP/prefix/bin/beacon" status >/dev/null
 pass 'CLI resolves installation symlink'
 
-printf '1..10\n'
+printf '1..11\n'

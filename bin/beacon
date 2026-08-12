@@ -30,7 +30,7 @@ commands:
   jump                    jump to the last completed pane
   cleanup                 remove expired or dead-pane records
   reset                   clear local Beacon state
-  hook <prompt|stop|notification>
+  hook <prompt|stop|notification|permission>
   doctor                  validate local dependencies and state
 EOF
 }
@@ -107,7 +107,7 @@ case "$command" in
   hook)
     hook="${1:-}"
     case "$hook" in
-      prompt|stop|notification) exec "$BEACON_ROOT/hooks/on_${hook}.sh" ;;
+      prompt|stop|notification|permission) exec "$BEACON_ROOT/hooks/on_${hook}.sh" ;;
       *) echo "beacon: unsupported hook: $hook" >&2; exit 2 ;;
     esac
     ;;
