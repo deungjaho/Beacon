@@ -20,11 +20,11 @@ import (
 )
 
 const (
-	envStateDir = "BEACON_STATE_DIR"
-	envCacheDir = "BEACON_CACHE_DIR"
-	envTmuxBin  = "BEACON_TMUX_BIN"
-	envNow      = "BEACON_NOW"
-	envNotify   = "BEACON_NOTIFY"
+	envStateDir   = "BEACON_STATE_DIR"
+	envCacheDir   = "BEACON_CACHE_DIR"
+	envTmuxBin    = "BEACON_TMUX_BIN"
+	envNow        = "BEACON_NOW"
+	envNotify     = "BEACON_NOTIFY"
 	envShowSystem = "BEACON_SHOW_SYSTEM"
 )
 

@@ -43,14 +43,14 @@ const (
 	minWidth = 80
 
 	// Priority order for narrow-width trimming. Higher priority = kept longer.
-	prioAgent   = 0
-	prioPressure = 1
-	prioPaneMem  = 2
-	prioCPU      = 3
-	prioWindowMem = 4
+	prioAgent      = 0
+	prioPressure   = 1
+	prioPaneMem    = 2
+	prioCPU        = 3
+	prioWindowMem  = 4
 	prioSessionMem = 5
-	prioTotalMem  = 6
-	prioProcCount = 7
+	prioTotalMem   = 6
+	prioProcCount  = 7
 )
 
 var agentCommands = map[string]bool{
@@ -89,10 +89,10 @@ func buildSegments(args Args, st *state.State, m collector.Metrics) []Segment {
 	// Memory pressure
 	if m.MemPressureOK {
 		segs = append(segs, Segment{
-			FG:   "#1d1f21",
-			BG:   collector.MemPressureColor(m.MemPressure),
-			Text: fmt.Sprintf(" %s %d%% ", iconMemPressure, m.MemPressure),
-			Bold: true,
+			FG:       "#1d1f21",
+			BG:       collector.MemPressureColor(m.MemPressure),
+			Text:     fmt.Sprintf(" %s %d%% ", iconMemPressure, m.MemPressure),
+			Bold:     true,
 			Priority: prioPressure,
 		})
 	}

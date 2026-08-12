@@ -15,22 +15,22 @@ import (
 
 // Metrics is the full resource snapshot written by the daemon.
 type Metrics struct {
-	SampledAt       int64              `json:"sampled_at"`
-	CPUPercent      float64            `json:"cpu_percent"`
-	CPUOK           bool               `json:"cpu_ok"`
-	MemPressure     int                `json:"mem_pressure"`
-	MemPressureOK   bool               `json:"mem_pressure_ok"`
-	ProcCount       int                `json:"proc_count"`
-	ProcCountOK     bool               `json:"proc_count_ok"`
-	PaneMemKB       map[string]uint64  `json:"pane_mem_kb"`
-	WindowMemKB     map[string]uint64  `json:"window_mem_kb"`
-	SessionMemKB    map[string]uint64  `json:"session_mem_kb"`
-	TotalMemKB      uint64             `json:"total_mem_kb"`
-	PaneMem         map[string]string  `json:"pane_mem"`
-	WindowMem       map[string]string  `json:"window_mem"`
-	SessionMem      map[string]string  `json:"session_mem"`
-	TotalMem        string             `json:"total_mem"`
-	PaneCommands    map[string]string  `json:"pane_commands"`
+	SampledAt     int64             `json:"sampled_at"`
+	CPUPercent    float64           `json:"cpu_percent"`
+	CPUOK         bool              `json:"cpu_ok"`
+	MemPressure   int               `json:"mem_pressure"`
+	MemPressureOK bool              `json:"mem_pressure_ok"`
+	ProcCount     int               `json:"proc_count"`
+	ProcCountOK   bool              `json:"proc_count_ok"`
+	PaneMemKB     map[string]uint64 `json:"pane_mem_kb"`
+	WindowMemKB   map[string]uint64 `json:"window_mem_kb"`
+	SessionMemKB  map[string]uint64 `json:"session_mem_kb"`
+	TotalMemKB    uint64            `json:"total_mem_kb"`
+	PaneMem       map[string]string `json:"pane_mem"`
+	WindowMem     map[string]string `json:"window_mem"`
+	SessionMem    map[string]string `json:"session_mem"`
+	TotalMem      string            `json:"total_mem"`
+	PaneCommands  map[string]string `json:"pane_commands"`
 }
 
 // tmuxPane is a single pane entry from tmux list-panes.

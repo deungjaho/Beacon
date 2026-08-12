@@ -153,10 +153,10 @@ func TestRenderProcCount(t *testing.T) {
 func TestRenderPaneMemory(t *testing.T) {
 	st := state.NewState()
 	m := collector.Metrics{
-		PaneMem:  map[string]string{"%1": "120M"},
-		WindowMem: map[string]string{"s:1": "340M"},
+		PaneMem:    map[string]string{"%1": "120M"},
+		WindowMem:  map[string]string{"s:1": "340M"},
 		SessionMem: map[string]string{"s": "1.2G"},
-		TotalMem: "3.4G",
+		TotalMem:   "3.4G",
 	}
 	args := Args{Width: 160, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, st, m)
@@ -520,9 +520,9 @@ func TestRenderPowerlineSeparatorBetweenCPUAndWindowMem(t *testing.T) {
 	st := state.NewState()
 	st.Panes["%1"] = state.PaneRecord{Status: "working", Summary: "busy", Window: "@1", Session: "s", Time: 100}
 	m := collector.Metrics{
-		CPUPercent:  45,
-		CPUOK:       true,
-		WindowMem:   map[string]string{"s:1": "340M"},
+		CPUPercent: 45,
+		CPUOK:      true,
+		WindowMem:  map[string]string{"s:1": "340M"},
 	}
 	args := Args{Width: 200, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := []byte(Render(args, st, m))

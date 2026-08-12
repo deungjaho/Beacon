@@ -6,10 +6,10 @@ import (
 
 func TestParseMacOSCPUUsage(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		want    float64
-		wantOK  bool
+		name   string
+		input  string
+		want   float64
+		wantOK bool
 	}{
 		{
 			name:   "normal",
@@ -188,8 +188,8 @@ func TestAggregatePaneMemory(t *testing.T) {
 
 func TestFormatMemoryMB(t *testing.T) {
 	tests := []struct {
-		kb    uint64
-		want  string
+		kb   uint64
+		want string
 	}{
 		{0, "0M"},
 		{512 * 1024, "512M"},
@@ -208,8 +208,8 @@ func TestFormatMemoryMB(t *testing.T) {
 
 func TestFormatUsagePercent(t *testing.T) {
 	tests := []struct {
-		val   float64
-		want  string
+		val  float64
+		want string
 	}{
 		{0, "0%"},
 		{15, "15%"},

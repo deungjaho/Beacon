@@ -205,7 +205,7 @@ func TestCLIReportRecordsPaneContext(t *testing.T) {
 	te := newTestEnv(t)
 	te.run("reset")
 	te.runWithEnv(map[string]string{
-		"TMUX_PANE": "%1",
+		"TMUX_PANE":  "%1",
 		"BEACON_NOW": "100",
 	}, "report", "working", "build\nproject", "/tmp/project")
 	st := te.loadState()
@@ -244,7 +244,7 @@ func TestCLITmuxCompletedRendering(t *testing.T) {
 		"BEACON_NOW": "100",
 	}, "report", "completed", "all tests passed")
 	out, _ := te.runWithEnv(map[string]string{
-		"BEACON_NOW":       "100",
+		"BEACON_NOW":         "100",
 		"BEACON_SHOW_SYSTEM": "0",
 	}, "status-tmux", "160", "black", "test-session", "1", "%1", "@1")
 	assertContains(t, out, "all tests passed", "tmux completed rendering")
@@ -260,7 +260,7 @@ func TestCLITmuxRendererIsReadOnly(t *testing.T) {
 	}, "report", "completed", "all tests passed")
 	before, _ := os.ReadFile(filepath.Join(te.stateDir, "panes.json"))
 	te.runWithEnv(map[string]string{
-		"BEACON_NOW":       "100",
+		"BEACON_NOW":         "100",
 		"BEACON_SHOW_SYSTEM": "0",
 	}, "status-tmux", "160", "black", "test-session", "1", "%1", "@1")
 	after, _ := os.ReadFile(filepath.Join(te.stateDir, "panes.json"))

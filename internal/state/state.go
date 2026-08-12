@@ -63,11 +63,11 @@ func validStatus(s string) bool {
 
 // Store manages the local panes.json file with a mkdir-based mutex lock.
 type Store struct {
-	dir      string
-	file     string
-	lockDir  string
-	mu       sync.Mutex // serializes in-process callers; cross-process uses mkdir lock
-	now      func() int64
+	dir     string
+	file    string
+	lockDir string
+	mu      sync.Mutex // serializes in-process callers; cross-process uses mkdir lock
+	now     func() int64
 }
 
 // NewStore creates a Store rooted at dir. The directory is created if needed.
