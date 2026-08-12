@@ -2,7 +2,18 @@
 # Local-first tmux/agent attention CLI.
 set -euo pipefail
 
-BEACON_ROOT="${BEACON_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+resolve_script() {
+  local source="$1" dir
+  while [[ -L "$source" ]]; do
+    dir=$(cd "$(dirname "$source")" && pwd)
+    source=$(readlink "$source")
+    [[ "$source" = /* ]] || source="$dir/$source"
+  done
+  printf '%s' "$source"
+}
+
+script_path=$(resolve_script "$0")
+BEACON_ROOT="${BEACON_ROOT:-$(cd "$(dirname "$script_path")/.." && pwd)}"
 STATE="$BEACON_ROOT/lib/state.sh"
 NOTIFY="$BEACON_ROOT/lib/notify.sh"
 TMUX_BIN="${BEACON_TMUX_BIN:-tmux}"

@@ -84,4 +84,9 @@ pass 'malformed hook input is non-fatal'
 "$ROOT/bin/beacon" doctor >/dev/null
 pass 'doctor validates dependencies and state'
 
-printf '1..8\n'
+mkdir -p "$TMP/prefix/bin"
+ln -s "$ROOT/bin/beacon" "$TMP/prefix/bin/beacon"
+"$TMP/prefix/bin/beacon" status >/dev/null
+pass 'CLI resolves installation symlink'
+
+printf '1..9\n'
