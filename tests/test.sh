@@ -26,6 +26,7 @@ case "${1:-}" in
       '#{session_name}') printf 'test-session\n' ;;
       '#{window_id}') printf '@1\n' ;;
       '#{pane_id}') printf '%s\n' "$target" ;;
+      '#{pane_current_command}') printf '%s\n' "${BEACON_TEST_PANE_COMMAND:-zsh}" ;;
     esac
     ;;
   list-panes) for i in $(seq 1 20); do printf '%%%s\n' "$i"; done ;;
@@ -72,6 +73,20 @@ after_hash=$(cksum "$BEACON_STATE_DIR/panes.json")
 assert_eq "$after_hash" "$before_hash" 'statusline state hash'
 pass 'tmux renderer is read-only'
 
+"$ROOT/bin/beacon" reset
+rendered=$(BEACON_TEST_PANE_COMMAND=codex BEACON_SHOW_SYSTEM=0 "$ROOT/bin/beacon" status-tmux 160 black test-session 1 '%9' '@9')
+assert_contains "$rendered" 'codex working' 'tmux command fallback'
+assert_contains "$rendered" '#F0DFAF' 'tmux command fallback color'
+[[ "$(jq '.panes | length' "$BEACON_STATE_DIR/panes.json")" == 0 ]] || fail 'fallback must not persist state'
+pass 'tmux renderer detects pre-hook agent panes'
+
+TMUX_PANE='%9' BEACON_NOW=100 "$ROOT/bin/beacon" report waiting 'needs input'
+rendered=$(BEACON_TEST_PANE_COMMAND=codex BEACON_NOW=100 BEACON_SHOW_SYSTEM=0 "$ROOT/bin/beacon" status-tmux 160 black test-session 1 '%9' '@1')
+assert_contains "$rendered" 'needs input' 'explicit state overrides fallback'
+[[ "$rendered" != *'codex working'* ]] || fail 'fallback replaced explicit state'
+pass 'explicit hook state overrides command fallback'
+
+TMUX_PANE='%1' BEACON_NOW=100 "$ROOT/bin/beacon" report completed 'all tests passed'
 BEACON_TEST_TMUX_LOG="$TMP/tmux.log" "$ROOT/bin/beacon" jump
 assert_contains "$(cat "$TMP/tmux.log")" 'test-session' 'jump session'
 assert_contains "$(cat "$TMP/tmux.log")" '%1' 'jump pane'
@@ -99,4 +114,4 @@ ln -s "$ROOT/bin/beacon" "$TMP/prefix/bin/beacon"
 "$TMP/prefix/bin/beacon" status >/dev/null
 pass 'CLI resolves installation symlink'
 
-printf '1..11\n'
+printf '1..13\n'
