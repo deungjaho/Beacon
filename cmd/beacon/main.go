@@ -324,32 +324,11 @@ func cmdStatusTmux(args []string) int {
 		_ = json.Unmarshal(data, &m)
 	}
 
-	// Pre-hook fallback: use pane command from snapshot if available.
-	// This avoids a tmux subprocess call in the hot path.
-	if rargs.PaneID != "" && st.Panes != nil {
-		if _, hasRecord := st.Panes[rargs.PaneID]; !hasRecord {
-			if cmd, ok := m.PaneCommands[rargs.PaneID]; ok {
-				rargs.PaneCommand = cmd
-			} else {
-				// Fallback to tmux call only if snapshot doesn't have the command.
-				rargs.PaneCommand = paneCommand(rargs.PaneID)
-			}
-		}
-	}
-
 	output := render.Render(rargs, st, m)
 	if output != "" {
 		fmt.Print(output)
 	}
 	return 0
-}
-
-func paneCommand(paneID string) string {
-	out, err := exec.Command(tmuxBin(), "display-message", "-p", "-t", paneID, "#{pane_current_command}").Output()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
 }
 
 func cmdJump(args []string) int {

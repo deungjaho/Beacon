@@ -19,7 +19,6 @@ type Args struct {
 	WindowIndex string
 	PaneID      string
 	WindowID    string
-	PaneCommand string // from tmux display-message, for pre-hook fallback
 }
 
 // Segment is a single Powerline segment.
@@ -52,11 +51,6 @@ const (
 	prioTotalMem   = 6
 	prioProcCount  = 7
 )
-
-var agentCommands = map[string]bool{
-	"codex": true, "claude": true, "devin": true, "opencode": true,
-	"op": true, "agy": true, "gemini": true,
-}
 
 // Render produces the final tmux status-right string.
 func Render(args Args, st *state.State, m collector.Metrics) string {
@@ -181,25 +175,6 @@ func buildAgentSegments(args Args, st *state.State) []Segment {
 			segs = append(segs, seg)
 		}
 	}
-	// Pre-hook fallback: if the current pane has no explicit record, infer
-	// from the pane command. This mirrors e9a544b's behavior.
-	if len(segs) == 0 && args.PaneID != "" && args.PaneCommand != "" {
-		if st == nil || st.Panes == nil {
-			return segs
-		}
-		if _, hasRecord := st.Panes[args.PaneID]; !hasRecord {
-			cmd := baseCommand(args.PaneCommand)
-			if agentCommands[cmd] {
-				segs = append(segs, Segment{
-					FG:       "#1d1f21",
-					BG:       "#F0DFAF",
-					Text:     fmt.Sprintf(" ● %s working ", cmd),
-					Bold:     false,
-					Priority: prioAgent,
-				})
-			}
-		}
-	}
 	return segs
 }
 
@@ -216,13 +191,6 @@ func agentSegment(status, summary string) (Segment, bool) {
 		return Segment{FG: "#ffffff", BG: "#CC3333", Text: fmt.Sprintf(" ✗ %s ", trunc)}, true
 	}
 	return Segment{}, false
-}
-
-func baseCommand(cmd string) string {
-	if idx := strings.LastIndex(cmd, "/"); idx >= 0 {
-		return cmd[idx+1:]
-	}
-	return cmd
 }
 
 func truncateSummary(s string, max int) string {

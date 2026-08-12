@@ -79,7 +79,6 @@ case "${1:-}" in
       '#{session_name}') printf 'test-session\n' ;;
       '#{window_id}') printf '@1\n' ;;
       '#{pane_id}') printf '%s\n' "$target" ;;
-      '#{pane_current_command}') printf '%s\n' "${BEACON_TEST_PANE_COMMAND:-zsh}" ;;
     esac
     ;;
   list-panes) for i in $(seq 1 100); do printf '%%%s\n' "$i"; done ;;
@@ -269,22 +268,26 @@ func TestCLITmuxRendererIsReadOnly(t *testing.T) {
 	}
 }
 
-func TestCLIPreHookPaneFallback(t *testing.T) {
+func TestCLINoRecordShowsNoAgentStatus(t *testing.T) {
+	// When a pane has no explicit Beacon record, status-tmux must not
+	// infer agent status from pane_current_command. Only resource metrics
+	// should appear (if available), not "codex working" or similar.
 	te := newTestEnv(t)
 	te.run("reset")
 	out, _ := te.runWithEnv(map[string]string{
-		"BEACON_TEST_PANE_COMMAND": "codex",
-		"BEACON_SHOW_SYSTEM":       "0",
+		"BEACON_SHOW_SYSTEM": "0",
 	}, "status-tmux", "160", "black", "test-session", "1", "%9", "@9")
-	assertContains(t, out, "codex working", "tmux command fallback")
-	assertContains(t, out, "#F0DFAF", "tmux command fallback color")
+	assertNotContains(t, out, "codex working", "no inferred agent status")
+	assertNotContains(t, out, "claude working", "no inferred agent status")
 	st := te.loadState()
 	if len(st.Panes) != 0 {
-		t.Fatalf("fallback must not persist state: %v", st.Panes)
+		t.Fatalf("no record should persist: %v", st.Panes)
 	}
 }
 
-func TestCLIExplicitStateOverridesFallback(t *testing.T) {
+func TestCLIExplicitStateShowsAgentStatus(t *testing.T) {
+	// When a pane has an explicit Beacon record from hooks/report, the
+	// agent status must appear in status-tmux.
 	te := newTestEnv(t)
 	te.run("reset")
 	te.runWithEnv(map[string]string{
@@ -292,12 +295,10 @@ func TestCLIExplicitStateOverridesFallback(t *testing.T) {
 		"BEACON_NOW": "100",
 	}, "report", "waiting", "needs input")
 	out, _ := te.runWithEnv(map[string]string{
-		"BEACON_TEST_PANE_COMMAND": "codex",
-		"BEACON_NOW":               "100",
-		"BEACON_SHOW_SYSTEM":       "0",
+		"BEACON_NOW":         "100",
+		"BEACON_SHOW_SYSTEM": "0",
 	}, "status-tmux", "160", "black", "test-session", "1", "%9", "@1")
-	assertContains(t, out, "needs input", "explicit state overrides fallback")
-	assertNotContains(t, out, "codex working", "fallback replaced explicit state")
+	assertContains(t, out, "needs input", "explicit agent state")
 }
 
 func TestCLIJumpSelectsLivePane(t *testing.T) {

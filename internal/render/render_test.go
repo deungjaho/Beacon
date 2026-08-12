@@ -80,28 +80,35 @@ func TestRenderAgentBlocked(t *testing.T) {
 	}
 }
 
-func TestRenderPreHookFallback(t *testing.T) {
+func TestRenderNoRecordNoAgentSegment(t *testing.T) {
+	// When a pane has no explicit Beacon record, the renderer must not
+	// infer agent status. No agent segment should appear.
 	st := state.NewState()
-	args := Args{Width: 160, StatusBG: "black", PaneID: "%9", WindowID: "@9", SessionName: "s", WindowIndex: "1", PaneCommand: "codex"}
+	args := Args{Width: 160, StatusBG: "black", PaneID: "%9", WindowID: "@9", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, st, collector.Metrics{})
-	if !strings.Contains(out, "codex working") {
-		t.Fatalf("missing fallback: %q", out)
+	if strings.Contains(out, "working") {
+		t.Fatalf("should not infer working status: %q", out)
 	}
-	if !strings.Contains(out, "#F0DFAF") {
-		t.Fatalf("missing fallback color: %q", out)
+	if strings.Contains(out, "codex") {
+		t.Fatalf("should not contain pane command: %q", out)
+	}
+	if strings.Contains(out, "claude") {
+		t.Fatalf("should not contain pane command: %q", out)
 	}
 }
 
-func TestRenderExplicitStateOverridesFallback(t *testing.T) {
+func TestRenderExplicitStateShowsAgent(t *testing.T) {
+	// When a pane has an explicit Beacon record, the agent status must
+	// appear with the correct state symbol and summary.
 	st := state.NewState()
 	st.Panes["%9"] = state.PaneRecord{Status: "waiting", Summary: "needs input", Window: "@1", Session: "s", Time: 100}
-	args := Args{Width: 160, StatusBG: "black", PaneID: "%9", WindowID: "@1", SessionName: "s", WindowIndex: "1", PaneCommand: "codex"}
+	args := Args{Width: 160, StatusBG: "black", PaneID: "%9", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, st, collector.Metrics{})
 	if !strings.Contains(out, "needs input") {
 		t.Fatalf("missing explicit state: %q", out)
 	}
-	if strings.Contains(out, "codex working") {
-		t.Fatalf("fallback should be replaced: %q", out)
+	if !strings.Contains(out, "#CC9393") {
+		t.Fatalf("missing waiting color: %q", out)
 	}
 }
 

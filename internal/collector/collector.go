@@ -30,7 +30,6 @@ type Metrics struct {
 	WindowMem     map[string]string `json:"window_mem"`
 	SessionMem    map[string]string `json:"session_mem"`
 	TotalMem      string            `json:"total_mem"`
-	PaneCommands  map[string]string `json:"pane_commands"`
 }
 
 // tmuxPane is a single pane entry from tmux list-panes.
@@ -40,7 +39,6 @@ type tmuxPane struct {
 	WindowID    string
 	PaneID      string
 	PanePID     int
-	Command     string
 }
 
 // procInfo is a single process entry from ps.
@@ -223,39 +221,6 @@ func parseTmuxPanes(output string) []tmuxPane {
 			WindowID:    parts[2],
 			PaneID:      parts[3],
 			PanePID:     pid,
-		})
-	}
-	return panes
-}
-
-// parseTmuxPanesWithCommand parses list-panes output that includes pane_current_command.
-func parseTmuxPanesWithCommand(output string) []tmuxPane {
-	var panes []tmuxPane
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		parts := strings.Split(line, "|")
-		if len(parts) < 5 {
-			continue
-		}
-		pid, err := strconv.Atoi(parts[4])
-		if err != nil {
-			continue
-		}
-		cmd := ""
-		if len(parts) >= 6 {
-			cmd = parts[5]
-		}
-		panes = append(panes, tmuxPane{
-			Session:     parts[0],
-			WindowIndex: parts[1],
-			WindowID:    parts[2],
-			PaneID:      parts[3],
-			PanePID:     pid,
-			Command:     cmd,
 		})
 	}
 	return panes
@@ -557,11 +522,11 @@ func (c *Collector) sampleProcCount(m *Metrics) {
 
 func (c *Collector) samplePaneMemory(m *Metrics) {
 	panesOut, err := runCommand(c.tmuxBin, "list-panes", "-a", "-F",
-		"#{session_name}|#{window_index}|#{window_id}|#{pane_id}|#{pane_pid}|#{pane_current_command}")
+		"#{session_name}|#{window_index}|#{window_id}|#{pane_id}|#{pane_pid}")
 	if err != nil {
 		return
 	}
-	panes := parseTmuxPanesWithCommand(string(panesOut))
+	panes := parseTmuxPanes(string(panesOut))
 	if len(panes) == 0 {
 		return
 	}
@@ -590,11 +555,4 @@ func (c *Collector) samplePaneMemory(m *Metrics) {
 		m.SessionMem[k] = formatMemoryMB(v)
 	}
 	m.TotalMem = formatMemoryMB(result.TotalMem)
-	// Collect pane commands for pre-hook fallback (avoids tmux call in status-tmux).
-	m.PaneCommands = make(map[string]string, len(panes))
-	for _, p := range panes {
-		if p.Command != "" {
-			m.PaneCommands[p.PaneID] = p.Command
-		}
-	}
 }
