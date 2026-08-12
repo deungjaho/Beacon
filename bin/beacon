@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Local-first tmux/agent attention CLI.
+set -euo pipefail
+
+BEACON_ROOT="${BEACON_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
+STATE="$BEACON_ROOT/lib/state.sh"
+NOTIFY="$BEACON_ROOT/lib/notify.sh"
+TMUX_BIN="${BEACON_TMUX_BIN:-tmux}"
+
+usage() {
+  cat <<'EOF'
+usage: beacon <command> [args]
+
+commands:
+  report <working|waiting|blocked|completed> [summary] [cwd]
+  notify <title> <message>
+  status                  print JSON state
+  status-tmux [args...]   render tmux status-right
+  jump                    jump to the last completed pane
+  cleanup                 remove expired or dead-pane records
+  reset                   clear local Beacon state
+  hook <prompt|stop|notification>
+  doctor                  validate local dependencies and state
+EOF
+}
+
+sanitize_summary() {
+  jq -nr --arg value "${1:-}" '$value | gsub("[\\r\\n\\t]+"; " ") | .[0:80]'
+}
+
+report() {
+  local status="${1:-}" summary cwd pane session window now record last
+  case "$status" in
+    working|waiting|blocked|completed) ;;
+    *) echo "beacon: unsupported status: $status" >&2; return 2 ;;
+  esac
+  summary=$(sanitize_summary "${2:-}")
+  cwd="${3:-$PWD}"
+  pane="${TMUX_PANE:-}"
+  [[ -n "$pane" ]] || return 0
+
+  session=$("$TMUX_BIN" display-message -p -t "$pane" '#{session_name}' 2>/dev/null || true)
+  window=$("$TMUX_BIN" display-message -p -t "$pane" '#{window_id}' 2>/dev/null || true)
+  now="${BEACON_NOW:-$(date +%s)}"
+  record=$(jq -n \
+    --arg session "$session" --arg window "$window" --arg status "$status" \
+    --arg summary "$summary" --argjson time "$now" --arg cwd "$cwd" \
+    '{session:$session,window:$window,status:$status,summary:$summary,time:$time,cwd:$cwd}')
+  "$STATE" set-pane "$pane" "$record"
+
+  if [[ "$status" == "completed" ]]; then
+    last=$(jq -n \
+      --arg pane "$pane" --arg session "$session" --arg window "$window" \
+      --arg summary "$summary" --argjson time "$now" \
+      '{pane:$pane,session:$session,window:$window,summary:$summary,time:$time}')
+    "$STATE" set-last "$last"
+  fi
+}
+
+doctor() {
+  local failed=0
+  for dep in bash jq tmux; do
+    if command -v "$dep" >/dev/null 2>&1; then
+      printf 'ok      %s\n' "$dep"
+    else
+      printf 'missing %s\n' "$dep"
+      failed=1
+    fi
+  done
+  if "$STATE" init && "$STATE" get | jq -e '.panes | type == "object"' >/dev/null; then
+    printf 'ok      state\n'
+  else
+    printf 'failed  state\n'
+    failed=1
+  fi
+  if [[ -n "${TMUX:-}" ]]; then
+    printf 'ok      tmux-environment\n'
+  else
+    printf 'info    outside-tmux\n'
+  fi
+  return "$failed"
+}
+
+command="${1:-}"
+shift || true
+case "$command" in
+  report) report "$@" ;;
+  notify) "$NOTIFY" "${1:-Agent}" "${2:-}" ;;
+  status) "$STATE" get ;;
+  status-tmux) exec "$BEACON_ROOT/tmux/status.sh" "$@" ;;
+  jump) exec "$BEACON_ROOT/tmux/jump.sh" ;;
+  cleanup) "$STATE" cleanup ;;
+  reset) "$STATE" reset ;;
+  hook)
+    hook="${1:-}"
+    case "$hook" in
+      prompt|stop|notification) exec "$BEACON_ROOT/hooks/on_${hook}.sh" ;;
+      *) echo "beacon: unsupported hook: $hook" >&2; exit 2 ;;
+    esac
+    ;;
+  doctor) doctor ;;
+  -h|--help|help|'') usage ;;
+  *) echo "beacon: unknown command: $command" >&2; usage >&2; exit 2 ;;
+esac
