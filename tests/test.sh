@@ -26,7 +26,6 @@ case "${1:-}" in
       '#{session_name}') printf 'test-session\n' ;;
       '#{window_id}') printf '@1\n' ;;
       '#{pane_id}') printf '%s\n' "$target" ;;
-      '#{pane_current_command}') printf '%s\n' "${BEACON_TEST_PANE_COMMAND:-zsh}" ;;
     esac
     ;;
   list-panes) for i in $(seq 1 20); do printf '%%%s\n' "$i"; done ;;
@@ -74,17 +73,17 @@ assert_eq "$after_hash" "$before_hash" 'statusline state hash'
 pass 'tmux renderer is read-only'
 
 "$ROOT/bin/beacon" reset
-rendered=$(BEACON_TEST_PANE_COMMAND=codex BEACON_SHOW_SYSTEM=0 "$ROOT/bin/beacon" status-tmux 160 black test-session 1 '%9' '@9')
-assert_contains "$rendered" 'codex working' 'tmux command fallback'
-assert_contains "$rendered" '#F0DFAF' 'tmux command fallback color'
-[[ "$(jq '.panes | length' "$BEACON_STATE_DIR/panes.json")" == 0 ]] || fail 'fallback must not persist state'
-pass 'tmux renderer detects pre-hook agent panes'
+rendered=$(BEACON_SHOW_SYSTEM=0 "$ROOT/bin/beacon" status-tmux 160 black test-session 1 '%9' '@9')
+[[ "$rendered" != *'codex working'* ]] || fail 'no inferred agent working status'
+[[ "$rendered" != *'claude working'* ]] || fail 'no inferred agent working status'
+[[ "$(jq '.panes | length' "$BEACON_STATE_DIR/panes.json")" == 0 ]] || fail 'no record should persist'
+pass 'no inferred agent working without explicit record'
 
 TMUX_PANE='%9' BEACON_NOW=100 "$ROOT/bin/beacon" report waiting 'needs input'
-rendered=$(BEACON_TEST_PANE_COMMAND=codex BEACON_NOW=100 BEACON_SHOW_SYSTEM=0 "$ROOT/bin/beacon" status-tmux 160 black test-session 1 '%9' '@1')
-assert_contains "$rendered" 'needs input' 'explicit state overrides fallback'
-[[ "$rendered" != *'codex working'* ]] || fail 'fallback replaced explicit state'
-pass 'explicit hook state overrides command fallback'
+rendered=$(BEACON_NOW=100 BEACON_SHOW_SYSTEM=0 "$ROOT/bin/beacon" status-tmux 160 black test-session 1 '%9' '@1')
+assert_contains "$rendered" 'needs input' 'explicit state renders'
+assert_contains "$rendered" '#CC9393' 'waiting color'
+pass 'explicit hook state renders agent status'
 
 TMUX_PANE='%1' BEACON_NOW=100 "$ROOT/bin/beacon" report completed 'all tests passed'
 BEACON_TEST_TMUX_LOG="$TMP/tmux.log" "$ROOT/bin/beacon" jump
