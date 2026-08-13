@@ -9,6 +9,10 @@
 // strict order: CPU, memory pressure, process count, pane memory,
 // window memory, session memory, total tmux memory, system memory,
 // root disk usage.
+//
+// All available metrics are always rendered in fixed order. The renderer
+// does NOT hide segments based on terminal width — insufficient space is
+// handled by tmux's native status-right truncation.
 package render
 
 import (
@@ -30,11 +34,10 @@ type Args struct {
 
 // Segment is a single Powerline segment.
 type Segment struct {
-	FG       string
-	BG       string
-	Text     string
-	Bold     bool
-	Priority int
+	FG   string
+	BG   string
+	Text string
+	Bold bool
 }
 
 const (
@@ -47,39 +50,18 @@ const (
 	iconMemPressure = "\uf080"
 	iconSysMem      = "\U000F0210" // memory icon for system RAM (U+F0210)
 	iconDisk        = "\uf0a0"     // disk icon (U+F0A0)
-
-	minWidth = 80
-
-	// Priority order for narrow-width trimming. Higher priority = kept longer.
-	// Strict display order is CPU, pressure, proc count, pane mem, window mem,
-	// session mem, total mem, system mem, disk. Priority determines what gets
-	// dropped first when width is narrow — disk drops first, CPU drops last.
-	prioCPU        = 0
-	prioPressure   = 1
-	prioProcCount  = 2
-	prioPaneMem    = 3
-	prioWindowMem  = 4
-	prioSessionMem = 5
-	prioTotalMem   = 6
-	prioSysMem     = 7
-	prioDisk       = 8
 )
 
 // Render produces the final tmux status-right string.
+// All available metrics are always output in fixed order; tmux handles
+// truncation when the terminal is too narrow.
 func Render(args Args, m collector.Metrics) string {
-	if args.Width > 0 && args.Width < minWidth {
-		return ""
-	}
 	statusBG := args.StatusBG
 	if statusBG == "" || statusBG == "default" {
 		statusBG = "black"
 	}
 
 	segments := buildSegments(args, m)
-	if len(segments) == 0 {
-		return ""
-	}
-	segments = trimToWidth(segments, args.Width)
 	if len(segments) == 0 {
 		return ""
 	}
@@ -95,33 +77,30 @@ func buildSegments(args Args, m collector.Metrics) []Segment {
 	// 1. CPU
 	if m.CPUOK {
 		segs = append(segs, Segment{
-			FG:       "#1d1f21",
-			BG:       collector.CPUBGColor(m.CPUPercent),
-			Text:     fmt.Sprintf("%s %s", iconCPU, collector.FormatUsagePercent(m.CPUPercent)),
-			Bold:     true,
-			Priority: prioCPU,
+			FG:   "#1d1f21",
+			BG:   collector.CPUBGColor(m.CPUPercent),
+			Text: fmt.Sprintf("%s %s", iconCPU, collector.FormatUsagePercent(m.CPUPercent)),
+			Bold: true,
 		})
 	}
 
 	// 2. Memory pressure
 	if m.MemPressureOK {
 		segs = append(segs, Segment{
-			FG:       "#1d1f21",
-			BG:       collector.MemPressureColor(m.MemPressure),
-			Text:     fmt.Sprintf("%s %d%%", iconMemPressure, m.MemPressure),
-			Bold:     true,
-			Priority: prioPressure,
+			FG:   "#1d1f21",
+			BG:   collector.MemPressureColor(m.MemPressure),
+			Text: fmt.Sprintf("%s %d%%", iconMemPressure, m.MemPressure),
+			Bold: true,
 		})
 	}
 
 	// 3. Process count
 	if m.ProcCountOK {
 		segs = append(segs, Segment{
-			FG:       "#1d1f21",
-			BG:       "#B48EAD",
-			Text:     fmt.Sprintf("%s %d", iconProcCount, m.ProcCount),
-			Bold:     true,
-			Priority: prioProcCount,
+			FG:   "#1d1f21",
+			BG:   "#B48EAD",
+			Text: fmt.Sprintf("%s %d", iconProcCount, m.ProcCount),
+			Bold: true,
 		})
 	}
 
@@ -129,10 +108,9 @@ func buildSegments(args Args, m collector.Metrics) []Segment {
 	if args.PaneID != "" {
 		if v, ok := m.PaneMem[args.PaneID]; ok && v != "" {
 			segs = append(segs, Segment{
-				FG:       "#1d1f21",
-				BG:       "#7CB8BB",
-				Text:     fmt.Sprintf("%s %s", iconPaneMem, v),
-				Priority: prioPaneMem,
+				FG:   "#1d1f21",
+				BG:   "#7CB8BB",
+				Text: fmt.Sprintf("%s %s", iconPaneMem, v),
 			})
 		}
 	}
@@ -141,115 +119,49 @@ func buildSegments(args Args, m collector.Metrics) []Segment {
 	wkey := args.SessionName + ":" + args.WindowIndex
 	if v, ok := m.WindowMem[wkey]; ok && v != "" {
 		segs = append(segs, Segment{
-			FG:       "#F4F4E6",
-			BG:       "#5A8A8A",
-			Text:     fmt.Sprintf("%s %s", iconWindowMem, v),
-			Priority: prioWindowMem,
+			FG:   "#F4F4E6",
+			BG:   "#5A8A8A",
+			Text: fmt.Sprintf("%s %s", iconWindowMem, v),
 		})
 	}
 
 	// 6. Session memory
 	if v, ok := m.SessionMem[args.SessionName]; ok && v != "" {
 		segs = append(segs, Segment{
-			FG:       "#F4F4E6",
-			BG:       "#4A7A7A",
-			Text:     fmt.Sprintf("%s %s", iconSessionMem, v),
-			Priority: prioSessionMem,
+			FG:   "#F4F4E6",
+			BG:   "#4A7A7A",
+			Text: fmt.Sprintf("%s %s", iconSessionMem, v),
 		})
 	}
 
 	// 7. Total tmux memory
 	if m.TotalMem != "" {
 		segs = append(segs, Segment{
-			FG:       "#F4F4E6",
-			BG:       "#3A6A6A",
-			Text:     fmt.Sprintf("%s %s", iconTotalMem, m.TotalMem),
-			Priority: prioTotalMem,
+			FG:   "#F4F4E6",
+			BG:   "#3A6A6A",
+			Text: fmt.Sprintf("%s %s", iconTotalMem, m.TotalMem),
 		})
 	}
 
 	// 8. System memory (used/total)
 	if m.SysMemOK && m.SysMemUsed != "" && m.SysMemTotal != "" {
 		segs = append(segs, Segment{
-			FG:       "#F4F4E6",
-			BG:       "#2A5A5A",
-			Text:     fmt.Sprintf("%s %s/%s", iconSysMem, m.SysMemUsed, m.SysMemTotal),
-			Priority: prioSysMem,
+			FG:   "#F4F4E6",
+			BG:   "#2A5A5A",
+			Text: fmt.Sprintf("%s %s/%s", iconSysMem, m.SysMemUsed, m.SysMemTotal),
 		})
 	}
 
 	// 9. Root disk usage (used/total)
 	if m.DiskOK && m.DiskUsed != "" && m.DiskTotal != "" {
 		segs = append(segs, Segment{
-			FG:       "#F4F4E6",
-			BG:       "#1A4A4A",
-			Text:     fmt.Sprintf("%s %s/%s", iconDisk, m.DiskUsed, m.DiskTotal),
-			Priority: prioDisk,
+			FG:   "#F4F4E6",
+			BG:   "#1A4A4A",
+			Text: fmt.Sprintf("%s %s/%s", iconDisk, m.DiskUsed, m.DiskTotal),
 		})
 	}
 
 	return segs
-}
-
-// trimToWidth drops the lowest-priority segments until the estimated display
-// width fits.
-func trimToWidth(segs []Segment, width int) []Segment {
-	if width <= 0 {
-		return segs
-	}
-	maxChars := width / 2
-	total := 0
-	for _, s := range segs {
-		total += visibleLen(s.Text)
-	}
-	if total <= maxChars {
-		return segs
-	}
-	sorted := make([]Segment, len(segs))
-	copy(sorted, segs)
-	for i := 0; i < len(sorted); i++ {
-		minIdx := i
-		for j := i + 1; j < len(sorted); j++ {
-			if sorted[j].Priority < sorted[minIdx].Priority {
-				minIdx = j
-			}
-		}
-		sorted[i], sorted[minIdx] = sorted[minIdx], sorted[i]
-	}
-	var kept []Segment
-	total = 0
-	for _, s := range sorted {
-		ln := visibleLen(s.Text)
-		if total+ln > maxChars && len(kept) > 0 {
-			continue
-		}
-		kept = append(kept, s)
-		total += ln
-	}
-	return kept
-}
-
-func visibleLen(s string) int {
-	clean := stripTmuxEscapes(s)
-	return len([]rune(clean))
-}
-
-func stripTmuxEscapes(s string) string {
-	var out strings.Builder
-	i := 0
-	for i < len(s) {
-		if s[i] == '#' && i+1 < len(s) && s[i+1] == '[' {
-			end := strings.IndexByte(s[i:], ']')
-			if end < 0 {
-				break
-			}
-			i += end + 1
-			continue
-		}
-		out.WriteByte(s[i])
-		i++
-	}
-	return out.String()
 }
 
 func formatPowerline(statusBG string, segs []Segment) string {

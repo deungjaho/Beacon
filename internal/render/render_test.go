@@ -236,35 +236,50 @@ func TestRenderWindowSessionTotalMemory(t *testing.T) {
 	}
 }
 
-func TestRenderNarrowWidthDropsNonPriority(t *testing.T) {
+// TestRenderWidthInvariant verifies that the renderer does NOT hide segments
+// based on width. All available metrics must always be present in the output
+// regardless of width — tmux handles truncation natively.
+func TestRenderWidthInvariant(t *testing.T) {
 	m := collector.Metrics{
 		CPUPercent:    50,
 		CPUOK:         true,
 		MemPressure:   40,
 		MemPressureOK: true,
-		ProcCount:     200,
+		ProcCount:     230,
 		ProcCountOK:   true,
-		PaneMem:       map[string]string{"%1": "100M"},
-		WindowMem:     map[string]string{"s:1": "200M"},
-		SessionMem:    map[string]string{"s": "500M"},
-		TotalMem:      "1G",
+		PaneMem:       map[string]string{"%1": "120M"},
+		WindowMem:     map[string]string{"s:1": "340M"},
+		SessionMem:    map[string]string{"s": "1.2G"},
+		TotalMem:      "3.4G",
+		SysMemOK:      true,
+		SysMemUsed:    "15G",
+		SysMemTotal:   "16G",
+		DiskOK:        true,
+		DiskUsed:      "12G",
+		DiskTotal:     "228G",
 	}
-	// At width 90, CPU + pressure should be present (highest priority).
-	args := Args{Width: 90, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
-	out := Render(args, m)
-	if !strings.Contains(out, "\uf4bc") {
-		t.Fatalf("narrow: missing CPU: %q", out)
-	}
-	if !strings.Contains(out, "\uf080") {
-		t.Fatalf("narrow: missing pressure: %q", out)
-	}
-}
-
-func TestRenderMinWidthExitsEmpty(t *testing.T) {
-	args := Args{Width: 50, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
-	out := Render(args, collector.Metrics{})
-	if out != "" {
-		t.Fatalf("expected empty for narrow width, got %q", out)
+	// Run at several widths including very narrow ones.
+	widths := []int{20, 40, 60, 80, 120, 160, 200, 0}
+	for _, w := range widths {
+		args := Args{Width: w, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
+		out := Render(args, m)
+		// All 9 segments must be present at every width.
+		checks := []struct{ name, needle string }{
+			{"CPU", "\uf4bc"},
+			{"pressure", "\uf080"},
+			{"proc count", "\uf46c"},
+			{"pane mem", "\ue266"},
+			{"window mem", "\U000F05B2"},
+			{"session mem", "\uebc8"},
+			{"total mem", "\U000F035B"},
+			{"sys mem", "\U000F0210"},
+			{"disk", "\uf0a0"},
+		}
+		for _, c := range checks {
+			if !strings.Contains(out, c.needle) {
+				t.Fatalf("width=%d: missing %s segment: %q", w, c.name, out)
+			}
+		}
 	}
 }
 
@@ -576,38 +591,5 @@ func TestRenderDiskSegment(t *testing.T) {
 	out := Render(args, m)
 	if !strings.Contains(out, "12G/228G") {
 		t.Fatalf("missing disk used/total: %q", out)
-	}
-}
-
-func TestRenderNarrowDropsDiskFirst(t *testing.T) {
-	// At narrow width with all segments present, disk (lowest priority)
-	// should be dropped before CPU (highest priority).
-	m := collector.Metrics{
-		CPUPercent:    50,
-		CPUOK:         true,
-		MemPressure:   40,
-		MemPressureOK: true,
-		ProcCount:     230,
-		ProcCountOK:   true,
-		PaneMem:       map[string]string{"%1": "120M"},
-		WindowMem:     map[string]string{"s:1": "340M"},
-		SessionMem:    map[string]string{"s": "1.2G"},
-		TotalMem:      "3.4G",
-		SysMemOK:      true,
-		SysMemUsed:    "15G",
-		SysMemTotal:   "16G",
-		DiskOK:        true,
-		DiskUsed:      "12G",
-		DiskTotal:     "228G",
-	}
-	args := Args{Width: 85, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
-	out := Render(args, m)
-	// CPU (priority 0) should be present.
-	if !strings.Contains(out, "\uf4bc") {
-		t.Fatalf("narrow: CPU should be present: %q", out)
-	}
-	// Disk (priority 8, lowest) should be dropped.
-	if strings.Contains(out, "228G") {
-		t.Fatalf("narrow: disk should be dropped: %q", out)
 	}
 }
