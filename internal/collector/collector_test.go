@@ -578,3 +578,45 @@ func TestSampleFastTimeoutRetainsLastGood(t *testing.T) {
 		t.Fatalf("CPU out of range: %.1f", cpu)
 	}
 }
+
+// TestDiskSamplePath verifies the pure path-selection logic for disk
+// sampling without depending on the actual machine's filesystem.
+func TestDiskSamplePath(t *testing.T) {
+	tests := []struct {
+		name   string
+		goos   string
+		exists func(string) bool
+		want   string
+	}{
+		{"darwin data exists", "darwin", func(p string) bool { return p == "/System/Volumes/Data" }, "/System/Volumes/Data"},
+		{"darwin data missing", "darwin", func(string) bool { return false }, "/"},
+		{"linux always root", "linux", func(string) bool { return true }, "/"},
+		{"linux ignores data path", "linux", func(p string) bool { return p == "/System/Volumes/Data" }, "/"},
+		{"empty os defaults root", "", func(string) bool { return true }, "/"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := diskSamplePath(tt.goos, tt.exists)
+			if got != tt.want {
+				t.Fatalf("diskSamplePath(%q): got %q want %q", tt.goos, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseDfOutputLinuxRoot verifies the df parser handles real Linux
+// df -k / output format (with Use% column).
+func TestParseDfOutputLinuxRoot(t *testing.T) {
+	input := "Filesystem     1K-blocks      Used Available Use% Mounted on\n" +
+		"/dev/sda1      239362496 192196232  11908312  95% /\n"
+	used, total, ok := parseDfOutput(input)
+	if !ok {
+		t.Fatalf("parse failed")
+	}
+	if used != 192196232 {
+		t.Fatalf("used: got %d want 192196232", used)
+	}
+	if total != 239362496 {
+		t.Fatalf("total: got %d want 239362496", total)
+	}
+}

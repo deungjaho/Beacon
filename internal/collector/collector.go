@@ -20,6 +20,7 @@ package collector
 
 import (
 	"bufio"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -942,10 +943,27 @@ func (c *Collector) SampleSystemMemory() (uint64, uint64, bool) {
 	return 0, 0, false
 }
 
+// diskSamplePath returns the df argument for disk usage sampling.
+// On macOS, the root mount point is a read-only System volume; the real
+// user data lives on /System/Volumes/Data. If that path exists, use it;
+// otherwise fall back to / (Linux or older macOS).
+func diskSamplePath(goos string, exists func(string) bool) string {
+	if goos == "darwin" && exists("/System/Volumes/Data") {
+		return "/System/Volumes/Data"
+	}
+	return "/"
+}
+
+// pathExists is the default existence check for diskSamplePath.
+func pathExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
+}
+
 // SampleDisk collects root disk usage used/total in KB.
-// Uses `df -k /` on both macOS and Linux.
 func (c *Collector) SampleDisk() (uint64, uint64, bool) {
-	out, err := runCommand("df", "-k", "/")
+	path := diskSamplePath(c.os, pathExists)
+	out, err := runCommand("df", "-k", path)
 	if err != nil {
 		return 0, 0, false
 	}

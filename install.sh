@@ -21,11 +21,19 @@ build_go_binary() {
 }
 
 # Install launchd plist (macOS).
+# Uses the modern launchctl bootstrap/bootout API so the service is
+# registered in the gui/UID domain and survives shell exit/logout.
 install_launchd() {
   [[ "$(uname -s)" != "Darwin" ]] && return 0
   local bin="$DEST/bin/beacon"
   local state_dir="${XDG_DATA_HOME:-$HOME/.local/share}/beacon"
   local cache_dir="$HOME/Library/Caches/beacon"
+  local uid
+  uid="$(id -u)"
+  local domain="gui/${uid}"
+
+  mkdir -p "$HOME/Library/LaunchAgents" "$cache_dir"
+
   cat >"$LAUNCH_AGENT_PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -59,9 +67,20 @@ install_launchd() {
 </dict>
 </plist>
 EOF
-  launchctl unload "$LAUNCH_AGENT_PLIST" 2>/dev/null || true
-  launchctl load "$LAUNCH_AGENT_PLIST" 2>/dev/null || true
-  printf 'installed launchd agent: %s\n' "$LAUNCH_AGENT_PLIST"
+
+  # Bootout any existing registration (ignore errors if not loaded).
+  launchctl bootout "$domain/$LAUNCH_AGENT_LABEL" 2>/dev/null || true
+  # Bootstrap the plist into the gui/UID domain.
+  launchctl bootstrap "$domain" "$LAUNCH_AGENT_PLIST" 2>/dev/null || true
+  # Kickstart ensures the service is running right now.
+  launchctl kickstart -k "$domain/$LAUNCH_AGENT_LABEL" 2>/dev/null || true
+
+  # Verify the service is registered.
+  if launchctl print "$domain/$LAUNCH_AGENT_LABEL" >/dev/null 2>&1; then
+    printf 'installed launchd agent: %s (domain=%s)\n' "$LAUNCH_AGENT_PLIST" "$domain"
+  else
+    printf 'warning: launchd agent installed but not registered in %s\n' "$domain"
+  fi
 }
 
 # Install systemd user service (Linux).
