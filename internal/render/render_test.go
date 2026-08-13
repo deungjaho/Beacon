@@ -52,8 +52,8 @@ func TestRenderNoAgentStatus(t *testing.T) {
 		ProcCountOK:   true,
 		PaneMem:       map[string]string{"%1": "120M"},
 		WindowMem:     map[string]string{"s:1": "340M"},
-		SessionMem:    map[string]string{"s": "1.2G"},
-		TotalMem:      "3.4G",
+		SessionMem:    map[string]string{"s": "1G"},
+		TotalMem:      "3G",
 	}
 	args := Args{Width: 200, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, m)
@@ -76,8 +76,8 @@ func TestRenderStrictResourceOrder(t *testing.T) {
 		ProcCountOK:     true,
 		PaneMem:         map[string]string{"%1": "120M"},
 		WindowMem:       map[string]string{"s:1": "340M"},
-		SessionMem:      map[string]string{"s": "1.2G"},
-		TotalMem:        "3.4G",
+		SessionMem:      map[string]string{"s": "1G"},
+		TotalMem:        "3G",
 		DiskOK:          true,
 		DiskUsed:        "12G",
 		DiskTotal:       "228G",
@@ -174,8 +174,8 @@ func TestRenderPaneMemory(t *testing.T) {
 func TestRenderWindowSessionTotalMemory(t *testing.T) {
 	m := collector.Metrics{
 		WindowMem:  map[string]string{"s:1": "340M"},
-		SessionMem: map[string]string{"s": "1.2G"},
-		TotalMem:   "3.4G",
+		SessionMem: map[string]string{"s": "1G"},
+		TotalMem:   "3G",
 	}
 	args := Args{Width: 160, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, m)
@@ -188,13 +188,13 @@ func TestRenderWindowSessionTotalMemory(t *testing.T) {
 	if !strings.Contains(out, "\uebc8") {
 		t.Fatalf("missing session mem icon: %q", out)
 	}
-	if !strings.Contains(out, "1.2G") {
+	if !strings.Contains(out, "1G") {
 		t.Fatalf("missing session mem value: %q", out)
 	}
 	if !strings.Contains(out, "\U000F035B") {
 		t.Fatalf("missing total mem icon: %q", out)
 	}
-	if !strings.Contains(out, "3.4G") {
+	if !strings.Contains(out, "3G") {
 		t.Fatalf("missing total mem value: %q", out)
 	}
 }
@@ -212,8 +212,8 @@ func TestRenderWidthInvariant(t *testing.T) {
 		ProcCountOK:     true,
 		PaneMem:         map[string]string{"%1": "120M"},
 		WindowMem:       map[string]string{"s:1": "340M"},
-		SessionMem:      map[string]string{"s": "1.2G"},
-		TotalMem:        "3.4G",
+		SessionMem:      map[string]string{"s": "1G"},
+		TotalMem:        "3G",
 		DiskOK:          true,
 		DiskUsed:        "12G",
 		DiskTotal:       "228G",
@@ -321,8 +321,8 @@ func TestRenderExactIconBytes(t *testing.T) {
 		ProcCountOK:   true,
 		PaneMem:       map[string]string{"%1": "120M"},
 		WindowMem:     map[string]string{"s:1": "340M"},
-		SessionMem:    map[string]string{"s": "1.2G"},
-		TotalMem:      "3.4G",
+		SessionMem:    map[string]string{"s": "1G"},
+		TotalMem:      "3G",
 	}
 	args := Args{Width: 300, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := []byte(Render(args, m))
@@ -346,8 +346,8 @@ func TestRenderExactPowerlineSeparatorBytes(t *testing.T) {
 		ProcCountOK:   true,
 		PaneMem:       map[string]string{"%1": "120M"},
 		WindowMem:     map[string]string{"s:1": "340M"},
-		SessionMem:    map[string]string{"s": "1.2G"},
-		TotalMem:      "3.4G",
+		SessionMem:    map[string]string{"s": "1G"},
+		TotalMem:      "3G",
 	}
 	args := Args{Width: 300, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := []byte(Render(args, m))
@@ -438,7 +438,7 @@ func TestRenderPowerlineSeparatorBetweenPaneMemAndWindowMem(t *testing.T) {
 func TestRenderPowerlineSeparatorBetweenWindowMemAndSessionMem(t *testing.T) {
 	m := collector.Metrics{
 		WindowMem:  map[string]string{"s:1": "340M"},
-		SessionMem: map[string]string{"s": "1.2G"},
+		SessionMem: map[string]string{"s": "1G"},
 	}
 	args := Args{Width: 200, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := []byte(Render(args, m))
@@ -452,8 +452,8 @@ func TestRenderPowerlineSeparatorBetweenWindowMemAndSessionMem(t *testing.T) {
 
 func TestRenderPowerlineSeparatorBetweenSessionMemAndTotalMem(t *testing.T) {
 	m := collector.Metrics{
-		SessionMem: map[string]string{"s": "1.2G"},
-		TotalMem:   "3.4G",
+		SessionMem: map[string]string{"s": "1G"},
+		TotalMem:   "3G",
 	}
 	args := Args{Width: 200, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := []byte(Render(args, m))
@@ -521,8 +521,8 @@ func TestRenderSegmentTrailingSpace(t *testing.T) {
 		ProcCountOK:     true,
 		PaneMem:         map[string]string{"%1": "120M"},
 		WindowMem:       map[string]string{"s:1": "340M"},
-		SessionMem:      map[string]string{"s": "1.2G"},
-		TotalMem:        "3.4G",
+		SessionMem:      map[string]string{"s": "1G"},
+		TotalMem:        "3G",
 		DiskOK:          true,
 		DiskUsed:        "12G",
 		DiskTotal:       "228G",
@@ -533,7 +533,7 @@ func TestRenderSegmentTrailingSpace(t *testing.T) {
 
 	// Each segment value must be followed by exactly one space.
 	// Verify "45% " (CPU), "40% " (pressure), "230 " (proc), etc.
-	for _, want := range []string{"45% ", "40% ", "230 ", "120M ", "340M ", "1.2G ", "3.4G ", "12G "} {
+	for _, want := range []string{"45% ", "40% ", "230 ", "120M ", "340M ", "1G ", "3G ", "12G "} {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected segment text followed by one space %q in %q", want, out)
 		}
@@ -562,8 +562,8 @@ func TestRenderAllSegmentsTogether(t *testing.T) {
 		ProcCountOK:     true,
 		PaneMem:         map[string]string{"%1": "120M"},
 		WindowMem:       map[string]string{"s:1": "340M"},
-		SessionMem:      map[string]string{"s": "1.2G"},
-		TotalMem:        "3.4G",
+		SessionMem:      map[string]string{"s": "1G"},
+		TotalMem:        "3G",
 		DiskOK:          true,
 		DiskUsed:        "12G",
 		DiskTotal:       "228G",
@@ -572,7 +572,7 @@ func TestRenderAllSegmentsTogether(t *testing.T) {
 	args := Args{Width: 400, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, m)
 	// status-right shows only used for disk (not /total).
-	for _, want := range []string{"45%", "\uf4bc", "\uf080", "120M", "\U000F05B2", "340M", "\uebc8", "1.2G", "\U000F035B", "3.4G", "\uf46c", "230", "12G"} {
+	for _, want := range []string{"45%", "\uf4bc", "\uf080", "120M", "\U000F05B2", "340M", "\uebc8", "1G", "\U000F035B", "3G", "\uf46c", "230", "12G"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("wide render missing %q: %q", want, out)
 		}
@@ -666,7 +666,7 @@ func TestRenderDiskSegmentColorByAvailable(t *testing.T) {
 func TestRenderPowerlineSeparatorBetweenTotalMemAndDisk(t *testing.T) {
 	// Total mem → bg #3A6A6A. Disk → bg #DFAF8F (default brown).
 	m := collector.Metrics{
-		TotalMem:        "3.4G",
+		TotalMem:        "3G",
 		DiskOK:          true,
 		DiskUsed:        "12G",
 		DiskAvailableKB: 8 * 1024 * 1024,

@@ -193,10 +193,15 @@ func TestFormatMemoryMB(t *testing.T) {
 	}{
 		{0, "0M"},
 		{512 * 1024, "512M"},
-		{1024 * 1024, "1.0G"},
-		{2048 * 1024, "2.0G"},
-		{1536 * 1024, "1.5G"},
+		{1024 * 1024, "1G"},          // exactly 1 GiB
+		{1024*1024 + 512*1024, "2G"}, // 1.5 GiB → rounds to 2G
+		{2048 * 1024, "2G"},          // exactly 2 GiB
+		{1536 * 1024, "2G"},          // 1.5 GiB → rounds to 2G
 		{500 * 1024, "500M"},
+		{11*1024*1024 + 100*1024, "11G"},   // ~11.1 GiB → 11G
+		{222*1024*1024 + 819*1024, "223G"}, // ~222.8 GiB → rounds to 223G
+		{1023 * 1024, "1023M"},             // just under 1 GiB → M
+		{1024*1024 - 1, "1024M"},           // 1 KiB under 1 GiB → 1024M
 	}
 	for _, tc := range tests {
 		got := formatMemoryMB(tc.kb)

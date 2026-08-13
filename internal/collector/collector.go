@@ -475,7 +475,7 @@ func FormatMemoryMB(kb uint64) string {
 func formatMemoryMB(kb uint64) string {
 	mb := float64(kb) / 1024.0
 	if mb >= 1024 {
-		return strconv.FormatFloat(mb/1024.0, 'f', 1, 64) + "G"
+		return strconv.FormatFloat(mb/1024.0, 'f', 0, 64) + "G"
 	}
 	return strconv.FormatFloat(mb, 'f', 0, 64) + "M"
 }
