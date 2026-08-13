@@ -23,6 +23,8 @@ build_go_binary() {
 # Install launchd plist (macOS).
 # Uses the modern launchctl bootstrap/bootout API so the service is
 # registered in the gui/UID domain and survives shell exit/logout.
+# All steps are hard-fail: if bootstrap or kickstart fails, the script
+# exits non-zero so the user knows the service is not managed.
 install_launchd() {
   [[ "$(uname -s)" != "Darwin" ]] && return 0
   local bin="$DEST/bin/beacon"
@@ -68,19 +70,28 @@ install_launchd() {
 </plist>
 EOF
 
-  # Bootout any existing registration (ignore errors if not loaded).
+  # Bootout any existing registration (ignore "not loaded" errors).
   launchctl bootout "$domain/$LAUNCH_AGENT_LABEL" 2>/dev/null || true
-  # Bootstrap the plist into the gui/UID domain.
-  launchctl bootstrap "$domain" "$LAUNCH_AGENT_PLIST" 2>/dev/null || true
-  # Kickstart ensures the service is running right now.
-  launchctl kickstart -k "$domain/$LAUNCH_AGENT_LABEL" 2>/dev/null || true
 
-  # Verify the service is registered.
-  if launchctl print "$domain/$LAUNCH_AGENT_LABEL" >/dev/null 2>&1; then
-    printf 'installed launchd agent: %s (domain=%s)\n' "$LAUNCH_AGENT_PLIST" "$domain"
-  else
-    printf 'warning: launchd agent installed but not registered in %s\n' "$domain"
+  # Bootstrap the plist into the gui/UID domain — hard fail on error.
+  if ! launchctl bootstrap "$domain" "$LAUNCH_AGENT_PLIST" 2>&1; then
+    printf 'error: launchctl bootstrap failed for %s\n' "$domain" >&2
+    return 1
   fi
+
+  # Kickstart ensures the service is running right now — hard fail on error.
+  if ! launchctl kickstart -k "$domain/$LAUNCH_AGENT_LABEL" 2>&1; then
+    printf 'error: launchctl kickstart failed for %s\n' "$domain" >&2
+    return 1
+  fi
+
+  # Hard verification: launchctl print must succeed.
+  if ! launchctl print "$domain/$LAUNCH_AGENT_LABEL" >/dev/null 2>&1; then
+    printf 'error: launchctl print failed — service not registered in %s\n' "$domain" >&2
+    return 1
+  fi
+
+  printf 'installed launchd agent: %s (domain=%s)\n' "$LAUNCH_AGENT_PLIST" "$domain"
 }
 
 # Install systemd user service (Linux).
@@ -112,10 +123,14 @@ EOF
 }
 
 # Stop any running daemon before upgrading.
+# Tries the newly built binary first, then the installed symlink.
 stop_daemon() {
-  if [[ -x "$PREFIX/bin/beacon" ]]; then
-    "$PREFIX/bin/beacon" daemon stop >/dev/null 2>&1 || true
-  fi
+  local candidates=("$DEST/bin/beacon" "$PREFIX/bin/beacon")
+  for bin in "${candidates[@]}"; do
+    if [[ -x "$bin" ]]; then
+      "$bin" daemon stop >/dev/null 2>&1 || true
+    fi
+  done
 }
 
 # Keep the shell scripts as rollback backup.
@@ -127,8 +142,6 @@ install_shell_backup() {
   install -m 0755 "$ROOT/lib/"*.sh "$DEST/shell-backup/lib/" 2>/dev/null || true
   install -m 0755 "$ROOT/tmux/"*.sh "$DEST/shell-backup/tmux/" 2>/dev/null || true
 }
-
-stop_daemon
 
 install -d "$DEST/bin" "$DEST/hooks" "$DEST/lib" "$DEST/tmux" \
   "$DEST/skills/beacon-clear" "$PREFIX/bin"
@@ -149,6 +162,9 @@ if ! build_go_binary; then
 fi
 
 ln -sfn "$DEST/bin/beacon" "$PREFIX/bin/beacon"
+
+# Stop any running daemon (old or new binary) before re-registering service.
+stop_daemon
 
 # Install daemon service.
 install_launchd
