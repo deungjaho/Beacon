@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -27,6 +28,9 @@ const (
 	envNotify     = "BEACON_NOTIFY"
 	envShowSystem = "BEACON_SHOW_SYSTEM"
 )
+
+// paneIDPattern validates tmux pane IDs: %<digits> only.
+var paneIDPattern = regexp.MustCompile(`^%[0-9]+$`)
 
 func defaultStateDir() string {
 	if v := os.Getenv(envStateDir); v != "" {
@@ -83,7 +87,7 @@ commands:
   notify <title> <message>
   status                  print JSON state
   status-tmux [args...]   render tmux status-right (resource metrics only)
-  jump                    jump to oldest unacknowledged notification pane
+  jump [pane_id]          jump to oldest pending pane, or specific pane (e.g. %3)
   acknowledge <pane_id>   clear notification bell for a pane
   acknowledge-visible     clear bells for all panes visible to attached clients
   sync-bells             sync tmux user options from Beacon state
@@ -270,12 +274,7 @@ func cmdNotify(args []string) int {
 	if message == "" || os.Getenv(envNotify) == "0" {
 		return 0
 	}
-	switch runtime.GOOS {
-	case "darwin":
-		_ = exec.Command("osascript", "-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", "--", title, message).Run()
-	case "linux":
-		_ = exec.Command("notify-send", "--", title, message).Run()
-	}
+	runNotify(title, message)
 	return 0
 }
 
@@ -338,13 +337,27 @@ func cmdStatusTmux(args []string) int {
 	return 0
 }
 
+// cmdJump jumps to a notification pane. With no argument it jumps to the
+// oldest unacknowledged pending pane. With a pane ID argument (validated
+// as ^%[0-9]+$) it queries the live pane's session and jumps directly,
+// then acknowledges it.
+// Fail-closed: the bell is only acknowledged after a successful jump.
+// If any tmux step fails, the bell is preserved and an error is printed.
 func cmdJump(args []string) int {
 	store, err := state.NewStore(defaultStateDir())
 	if err != nil {
 		return 0
 	}
-	// Jump to the oldest unacknowledged notification pane.
-	// If no pending notifications, this is a no-op (no fallback to LastCompleted).
+	// If a pane ID argument is given, jump directly to that pane.
+	if len(args) > 0 {
+		pane := args[0]
+		if !paneIDPattern.MatchString(pane) {
+			fmt.Fprintf(os.Stderr, "beacon: invalid pane ID %q (must match ^%%[0-9]+$)\n", pane)
+			return 2
+		}
+		return jumpToPane(store, pane)
+	}
+	// No argument: jump to oldest unacknowledged notification pane.
 	pending := store.PendingNotifications()
 	for _, target := range pending {
 		// Verify pane is still live.
@@ -353,14 +366,123 @@ func cmdJump(args []string) int {
 			_ = ackPane(store, target.Pane)
 			continue
 		}
-		_ = exec.Command(tmuxBin(), "switch-client", "-t", target.Session).Run()
-		_ = exec.Command(tmuxBin(), "select-pane", "-t", target.Pane).Run()
-		// Acknowledge the bell on arrival.
+		if !switchToTarget(target.Session, target.Pane) {
+			fmt.Fprintf(os.Stderr, "beacon: jump to %s failed (no client or tmux error); bell preserved\n", target.Pane)
+			return 1
+		}
 		_ = ackPane(store, target.Pane)
 		return 0
 	}
-	// No pending notifications or all pending panes are gone.
 	return 0
+}
+
+// jumpToPane queries the live pane's session and window from live tmux,
+// then jumps to it using switch-client -c with an appropriate client.
+// The pane ID must already be validated.
+// Fail-closed: only acknowledges after a successful jump.
+func jumpToPane(store *state.Store, pane string) int {
+	tb := tmuxBin()
+	// Query session, window, and pane ID from live tmux.
+	// Use | separator (consistent with list-clients); tmux identifiers
+	// never contain |.
+	out, err := exec.Command(tb, "display-message", "-p", "-t", pane, "#{session_name}|#{window_id}|#{pane_id}").Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "beacon: pane %s not live: %v\n", pane, err)
+		return 1
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(out)), "|", 3)
+	if len(parts) < 3 {
+		fmt.Fprintf(os.Stderr, "beacon: unexpected display-message output for %s: %q\n", pane, string(out))
+		return 1
+	}
+	session, _, paneID := parts[0], parts[1], parts[2]
+	if !switchToTarget(session, paneID) {
+		fmt.Fprintf(os.Stderr, "beacon: jump to %s failed (no client or tmux error); bell preserved\n", pane)
+		return 1
+	}
+	_ = ackPane(store, pane)
+	return 0
+}
+
+// switchToTarget finds the best attached client and switches it to the
+// target session/pane. Returns false if no client is attached or any
+// tmux command fails. Fail-closed: every step must succeed.
+// Client selection priority:
+//  1. A client already in the target session.
+//  2. The most recently active client (by client_activity).
+func switchToTarget(session, paneID string) bool {
+	tb := tmuxBin()
+	// List clients: tty|session_name|activity_timestamp
+	out, err := exec.Command(tb, "list-clients", "-F", "#{client_tty}|#{session_name}|#{client_activity}").Output()
+	if err != nil {
+		return false
+	}
+	type clientInfo struct {
+		tty      string
+		session  string
+		activity int64
+	}
+	var clients []clientInfo
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.SplitN(line, "|", 3)
+		if len(fields) < 3 {
+			continue
+		}
+		act, _ := strconv.ParseInt(strings.TrimSpace(fields[2]), 10, 64)
+		clients = append(clients, clientInfo{
+			tty:      strings.TrimSpace(fields[0]),
+			session:  strings.TrimSpace(fields[1]),
+			activity: act,
+		})
+	}
+	if len(clients) == 0 {
+		return false
+	}
+	// Prefer a client already in the target session.
+	// Among those, pick the most recently active.
+	// If none in target session, pick the most recently active overall.
+	var best *clientInfo
+	for i := range clients {
+		c := &clients[i]
+		if c.session == session {
+			if best == nil || best.session != session || c.activity > best.activity {
+				best = c
+			}
+		} else if best == nil || (best.session != session && c.activity > best.activity) {
+			best = c
+		}
+	}
+	if best == nil {
+		return false
+	}
+	// switch-client -c client_tty -t session — must succeed.
+	if err := exec.Command(tb, "switch-client", "-c", best.tty, "-t", session).Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "beacon: switch-client -c %s -t %s failed: %v\n", best.tty, session, err)
+		return false
+	}
+	// Query the window ID for the pane.
+	winOut, err := exec.Command(tb, "display-message", "-p", "-t", paneID, "#{window_id}").Output()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "beacon: display-message for window of %s failed: %v\n", paneID, err)
+		return false
+	}
+	windowID := strings.TrimSpace(string(winOut))
+	if windowID != "" {
+		if err := exec.Command(tb, "select-window", "-t", windowID).Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "beacon: select-window -t %s failed: %v\n", windowID, err)
+			return false
+		}
+	}
+	// select-pane — must succeed.
+	if err := exec.Command(tb, "select-pane", "-t", paneID).Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "beacon: select-pane -t %s failed: %v\n", paneID, err)
+		return false
+	}
+	return true
 }
 
 func cmdAcknowledge(args []string) int {
@@ -768,16 +890,96 @@ func runReport(status, summary, cwd string) {
 	syncBells(store)
 }
 
+// runNotify sends a desktop notification. On macOS it prefers
+// terminal-notifier (if installed) with a -execute action that jumps to
+// the originating tmux pane and activates the terminal app. If
+// terminal-notifier is not available, it falls back to osascript.
+// The pane ID is read from TMUX_PANE; if absent, a plain notification
+// without a click action is sent.
 func runNotify(title, message string) {
 	if os.Getenv(envNotify) == "0" {
 		return
 	}
+	pane := os.Getenv("TMUX_PANE")
 	switch runtime.GOOS {
 	case "darwin":
-		_ = exec.Command("osascript", "-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", "--", title, message).Run()
+		if path, err := exec.LookPath("terminal-notifier"); err == nil {
+			args := []string{
+				"-title", title,
+				"-message", message,
+				"-sound", "default",
+			}
+			if paneIDPattern.MatchString(pane) {
+				args = append(args, "-group", pane)
+				args = append(args, "-execute", buildExecuteAction(pane))
+			}
+			_ = exec.Command(path, args...).Run()
+		} else {
+			_ = exec.Command("osascript", "-e", "on run argv", "-e", "display notification (item 2 of argv) with title (item 1 of argv)", "-e", "end run", "--", title, message).Run()
+		}
 	case "linux":
 		_ = exec.Command("notify-send", "--", title, message).Run()
 	}
+}
+
+// shellQuote wraps a string in POSIX single quotes, escaping any
+// embedded single quotes. This makes any string safe for shell embedding.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// buildExecuteAction constructs a shell-safe command string for
+// terminal-notifier's -execute flag. The action activates the terminal
+// app (if recognized) and jumps to the given tmux pane.
+// Uses the absolute path of the current beacon binary (via os.Executable)
+// so it works even when the notification shell's PATH doesn't include
+// ~/.local/bin. All arguments are POSIX shell-quoted.
+func buildExecuteAction(pane string) string {
+	var actions []string
+	app := detectTerminalApp()
+	switch app {
+	case "ghostty":
+		actions = append(actions, shellQuote("/usr/bin/open")+" -a "+shellQuote("Ghostty"))
+	}
+	// Use absolute path to beacon binary, not PATH lookup.
+	beaconPath, err := os.Executable()
+	if err != nil {
+		beaconPath = "beacon" // fallback, but absolute is preferred
+	}
+	// All arguments are shell-quoted.
+	actions = append(actions, shellQuote(beaconPath)+" jump "+shellQuote(pane))
+	return strings.Join(actions, " && ")
+}
+
+// detectTerminalApp determines the terminal application name.
+// It first checks TERM_PROGRAM (case-insensitive). If the value is
+// "tmux" or empty and TMUX is set (we're inside tmux), it queries
+// tmux's global environment for TERM_PROGRAM, which holds the real
+// terminal app (e.g. ghostty) that launched tmux.
+func detectTerminalApp() string {
+	tp := strings.ToLower(strings.TrimSpace(os.Getenv("TERM_PROGRAM")))
+	if tp != "" && tp != "tmux" {
+		return tp
+	}
+	// Inside tmux: query global environment for the real TERM_PROGRAM.
+	if os.Getenv("TMUX") == "" {
+		return tp
+	}
+	out, err := exec.Command(tmuxBin(), "show-environment", "-g", "TERM_PROGRAM").Output()
+	if err != nil {
+		return tp
+	}
+	// tmux show-environment output: "-TERM_PROGRAM=ghostty" or "TERM_PROGRAM=ghostty"
+	line := strings.TrimSpace(string(out))
+	// Strip leading "-" (unset marker shouldn't appear, but be safe).
+	line = strings.TrimPrefix(line, "-")
+	if idx := strings.Index(line, "="); idx >= 0 {
+		val := strings.TrimSpace(line[idx+1:])
+		if val != "" && strings.ToLower(val) != "tmux" {
+			return strings.ToLower(val)
+		}
+	}
+	return tp
 }
 
 func cmdDaemon(args []string) int {

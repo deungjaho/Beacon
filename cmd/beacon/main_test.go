@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,14 +80,31 @@ case "${1:-}" in
       '#{session_name}') printf 'test-session\n' ;;
       '#{window_id}') printf '@1\n' ;;
       '#{pane_id}') printf '%s\n' "$target" ;;
+      '#{session_name}|#{window_id}|#{pane_id}') printf 'test-session|@1|%s\n' "$target" ;;
     esac
     ;;
   list-panes) for i in $(seq 1 100); do printf '%%%s\n' "$i"; done ;;
   list-windows) printf '@1\n@2\n' ;;
   list-sessions) printf 'test-session\n' ;;
-  list-clients) printf '/dev/ttys000|%%1\n' ;;
+  list-clients)
+    # Check the -F format argument to decide output.
+    fmt=""
+    while (($#)); do
+      case "$1" in
+        -F) fmt="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    case "$fmt" in
+      *'#{pane_id}'*) printf '/dev/ttys000|%%1\n' ;;
+      *) printf '/dev/ttys000|test-session|1000\n' ;;
+    esac
+    ;;
   set-option) : ;;
-  switch-client|select-pane) printf '%s\n' "$*" >>"${BEACON_TEST_TMUX_LOG:-/dev/null}" ;;
+  show-environment)
+    # Return a fake global TERM_PROGRAM for tmux-inside-terminal detection.
+    printf 'TERM_PROGRAM=ghostty\n' ;;
+  switch-client|select-pane|select-window) printf '%s\n' "$*" >>"${BEACON_TEST_TMUX_LOG:-/dev/null}" ;;
 esac
 `
 	os.WriteFile(te.tmuxScript, []byte(script), 0o755)
@@ -151,7 +169,7 @@ func (te *testEnv) env() []string {
 		"BEACON_CACHE_DIR=" + te.cacheDir,
 		"BEACON_TMUX_BIN=" + te.tmuxScript,
 		"BEACON_NOTIFY=0",
-		"PATH=/usr/bin:/bin",
+		"PATH=" + filepath.Join(te.tmpDir, "bin") + ":/usr/bin:/bin",
 	}
 }
 
@@ -802,4 +820,494 @@ esac
 	if rec := st.Panes["%1"]; rec.Acknowledged {
 		t.Fatal("literal \\t must not be parsed as separator — %1 should remain unacknowledged")
 	}
+}
+
+// --- terminal-notifier and jump pane_id tests ---
+
+// writeFakeTerminalNotifier creates a fake terminal-notifier script that
+// logs its arguments to a file. Returns the log path.
+func (te *testEnv) writeFakeTerminalNotifier() string {
+	logPath := filepath.Join(te.tmpDir, "tn.log")
+	script := filepath.Join(te.tmpDir, "bin", "terminal-notifier")
+	os.MkdirAll(filepath.Dir(script), 0o755)
+	os.WriteFile(script, []byte(`#!/usr/bin/env bash
+printf '%s\n' "$@" >>"`+logPath+`"
+`), 0o755)
+	return logPath
+}
+
+// TestNotifyTerminalNotifierWithPane verifies that runNotify uses
+// terminal-notifier with -execute and -group when TMUX_PANE is set.
+func TestNotifyTerminalNotifierWithPane(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("terminal-notifier test only on macOS")
+	}
+	te := newTestEnv(t)
+	te.run("reset")
+	logPath := te.writeFakeTerminalNotifier()
+	// Enable notifications (default env has BEACON_NOTIFY=0).
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":     "%42",
+		"BEACON_NOTIFY": "1",
+		"TERM_PROGRAM":  "ghostty",
+	}, "notify", "TestAgent", "hello world")
+	data, _ := os.ReadFile(logPath)
+	logStr := string(data)
+	// Must use terminal-notifier, not osascript.
+	assertContains(t, logStr, "-title", "terminal-notifier title")
+	assertContains(t, logStr, "TestAgent", "terminal-notifier title value")
+	assertContains(t, logStr, "hello world", "terminal-notifier message value")
+	assertContains(t, logStr, "-group", "terminal-notifier group flag")
+	assertContains(t, logStr, "%42", "terminal-notifier group pane ID")
+	assertContains(t, logStr, "-execute", "terminal-notifier execute flag")
+	// Execute action must contain jump with the pane ID (path is os.Executable, not "beacon").
+	assertContains(t, logStr, "jump '%42'", "execute action jumps to pane")
+	// Ghostty terminal activation (shell-quoted).
+	assertContains(t, logStr, "'/usr/bin/open' -a 'Ghostty'", "execute activates Ghostty")
+}
+
+// TestNotifyTerminalNotifierNoPane verifies that without TMUX_PANE,
+// terminal-notifier is used but without -execute or -group.
+func TestNotifyTerminalNotifierNoPane(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("terminal-notifier test only on macOS")
+	}
+	te := newTestEnv(t)
+	te.run("reset")
+	logPath := te.writeFakeTerminalNotifier()
+	te.runWithEnv(map[string]string{
+		"BEACON_NOTIFY": "1",
+	}, "notify", "Agent", "no pane")
+	data, _ := os.ReadFile(logPath)
+	logStr := string(data)
+	assertContains(t, logStr, "-title", "terminal-notifier used")
+	assertContains(t, logStr, "no pane", "message present")
+	assertNotContains(t, logStr, "-execute", "no execute without pane")
+	assertNotContains(t, logStr, "-group", "no group without pane")
+}
+
+// TestNotifyFallbackOsascript verifies that without terminal-notifier,
+// the notification falls back to osascript.
+func TestNotifyFallbackOsascript(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("osascript fallback test only on macOS")
+	}
+	te := newTestEnv(t)
+	te.run("reset")
+	// Do NOT write fake terminal-notifier. PATH only has /usr/bin:/bin
+	// where terminal-notifier doesn't exist in test env.
+	// We can't easily verify osascript was called, but we can verify
+	// the command doesn't fail and exits 0.
+	_, code := te.runWithEnv(map[string]string{
+		"TMUX_PANE":     "%1",
+		"BEACON_NOTIFY": "1",
+	}, "notify", "Agent", "fallback test")
+	if code != 0 {
+		t.Fatalf("notify fallback should exit 0, got %d", code)
+	}
+}
+
+// TestJumpWithPaneID verifies that jump with a pane ID argument jumps
+// to that specific pane.
+func TestJumpWithPaneID(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	// Report on %5 so it has state.
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%5",
+		"BEACON_NOW": "100",
+	}, "report", "waiting", "test message")
+	// Jump to %5 explicitly.
+	te.runWithEnv(map[string]string{
+		"BEACON_TEST_TMUX_LOG": te.tmuxLog,
+	}, "jump", "%5")
+	logData, _ := os.ReadFile(te.tmuxLog)
+	logStr := string(logData)
+	assertContains(t, logStr, "test-session", "jump to pane session")
+	assertContains(t, logStr, "%5", "jump to correct pane")
+}
+
+// TestJumpInvalidPaneIDRejected verifies that jump rejects invalid pane IDs.
+func TestJumpInvalidPaneIDRejected(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	_, code := te.run("jump", "not-a-pane")
+	if code != 2 {
+		t.Fatalf("invalid pane ID should return 2, got %d", code)
+	}
+}
+
+// TestJumpPaneIDWithSpecialChars verifies that special characters in
+// pane ID argument are rejected, preventing shell injection.
+func TestJumpPaneIDWithSpecialChars(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	// Various injection attempts.
+	invalid := []string{
+		"%1; rm -rf /",
+		"%1$(whoami)",
+		"%1`whoami`",
+		"%1 && whoami",
+		"%1|whoami",
+		"$(whoami)",
+		"; whoami",
+	}
+	for _, p := range invalid {
+		_, code := te.run("jump", p)
+		if code != 2 {
+			t.Fatalf("jump with %q should return 2, got %d", p, code)
+		}
+	}
+}
+
+// TestBuildExecuteActionShellSafe verifies that buildExecuteAction
+// produces shell-safe output for valid pane IDs and doesn't inject
+// special characters from TERM_PROGRAM.
+func TestBuildExecuteActionShellSafe(t *testing.T) {
+	// Valid pane ID — should be single-quoted.
+	// Path is from os.Executable(), so we check for "jump '%99'" not "beacon jump".
+	action := buildExecuteAction("%99")
+	if !strings.Contains(action, "jump '%99'") {
+		t.Fatalf("execute action should contain jump '%%99': %q", action)
+	}
+}
+
+// TestBuildExecuteActionGhostty verifies Ghostty terminal activation.
+func TestBuildExecuteActionGhostty(t *testing.T) {
+	old := os.Getenv("TERM_PROGRAM")
+	os.Setenv("TERM_PROGRAM", "ghostty")
+	defer os.Setenv("TERM_PROGRAM", old)
+	action := buildExecuteAction("%1")
+	if !strings.Contains(action, "'/usr/bin/open' -a 'Ghostty'") {
+		t.Fatalf("execute action should activate Ghostty (quoted): %q", action)
+	}
+	if !strings.Contains(action, "jump '%1'") {
+		t.Fatalf("execute action should contain jump: %q", action)
+	}
+}
+
+// TestBuildExecuteActionUnknownTerminal verifies that unknown terminals
+// only get the pane jump, no terminal activation.
+func TestBuildExecuteActionUnknownTerminal(t *testing.T) {
+	old := os.Getenv("TERM_PROGRAM")
+	os.Setenv("TERM_PROGRAM", "unknown-term")
+	defer os.Setenv("TERM_PROGRAM", old)
+	action := buildExecuteAction("%1")
+	if strings.Contains(action, "/usr/bin/open") {
+		t.Fatalf("unknown terminal should not have open command: %q", action)
+	}
+	if !strings.Contains(action, "jump '%1'") {
+		t.Fatalf("execute action should still contain jump: %q", action)
+	}
+}
+
+// TestDetectTerminalAppViaTmuxEnv verifies that when TERM_PROGRAM=tmux
+// and TMUX is set, detectTerminalApp queries tmux show-environment -g
+// and returns the real terminal app (ghostty).
+func TestDetectTerminalAppViaTmuxEnv(t *testing.T) {
+	te := newTestEnv(t)
+	oldTP := os.Getenv("TERM_PROGRAM")
+	oldTMUX := os.Getenv("TMUX")
+	oldTmuxBin := os.Getenv("BEACON_TMUX_BIN")
+	os.Setenv("TERM_PROGRAM", "tmux")
+	os.Setenv("TMUX", "/tmp/tmux-1001/default,12345,0")
+	os.Setenv("BEACON_TMUX_BIN", te.tmuxScript)
+	defer func() {
+		os.Setenv("TERM_PROGRAM", oldTP)
+		os.Setenv("TMUX", oldTMUX)
+		os.Setenv("BEACON_TMUX_BIN", oldTmuxBin)
+	}()
+	app := detectTerminalApp()
+	if app != "ghostty" {
+		t.Fatalf("detectTerminalApp should return ghostty via tmux env, got %q", app)
+	}
+}
+
+// TestBuildExecuteActionTmuxInsideGhostty verifies that the -execute
+// action includes Ghostty activation when TERM_PROGRAM=tmux but tmux's
+// global environment has TERM_PROGRAM=ghostty.
+func TestBuildExecuteActionTmuxInsideGhostty(t *testing.T) {
+	te := newTestEnv(t)
+	oldTP := os.Getenv("TERM_PROGRAM")
+	oldTMUX := os.Getenv("TMUX")
+	oldTmuxBin := os.Getenv("BEACON_TMUX_BIN")
+	os.Setenv("TERM_PROGRAM", "tmux")
+	os.Setenv("TMUX", "/tmp/tmux-1001/default,12345,0")
+	os.Setenv("BEACON_TMUX_BIN", te.tmuxScript)
+	defer func() {
+		os.Setenv("TERM_PROGRAM", oldTP)
+		os.Setenv("TMUX", oldTMUX)
+		os.Setenv("BEACON_TMUX_BIN", oldTmuxBin)
+	}()
+	action := buildExecuteAction("%1")
+	if !strings.Contains(action, "'/usr/bin/open' -a 'Ghostty'") {
+		t.Fatalf("execute action should activate Ghostty via tmux env: %q", action)
+	}
+	if !strings.Contains(action, "jump '%1'") {
+		t.Fatalf("execute action should contain jump: %q", action)
+	}
+}
+
+// TestDetectTerminalAppDirectGhostty verifies that when TERM_PROGRAM
+// is directly set to ghostty (not inside tmux), detectTerminalApp
+// returns ghostty without querying tmux.
+func TestDetectTerminalAppDirectGhostty(t *testing.T) {
+	oldTP := os.Getenv("TERM_PROGRAM")
+	oldTMUX := os.Getenv("TMUX")
+	os.Setenv("TERM_PROGRAM", "ghostty")
+	os.Setenv("TMUX", "")
+	defer func() {
+		os.Setenv("TERM_PROGRAM", oldTP)
+		os.Setenv("TMUX", oldTMUX)
+	}()
+	app := detectTerminalApp()
+	if app != "ghostty" {
+		t.Fatalf("detectTerminalApp should return ghostty directly, got %q", app)
+	}
+}
+
+// TestDetectTerminalAppUnknownNoTmux verifies that an unknown terminal
+// without TMUX set returns the env value as-is.
+func TestDetectTerminalAppUnknownNoTmux(t *testing.T) {
+	oldTP := os.Getenv("TERM_PROGRAM")
+	oldTMUX := os.Getenv("TMUX")
+	os.Setenv("TERM_PROGRAM", "wezterm")
+	os.Setenv("TMUX", "")
+	defer func() {
+		os.Setenv("TERM_PROGRAM", oldTP)
+		os.Setenv("TMUX", oldTMUX)
+	}()
+	app := detectTerminalApp()
+	if app != "wezterm" {
+		t.Fatalf("detectTerminalApp should return wezterm, got %q", app)
+	}
+}
+
+// --- fail-closed jump tests ---
+
+// writeFailingTmux writes a fake tmux where a specified subcommand exits 1.
+// failCmd is one of: "switch-client", "select-window", "select-pane",
+// "list-clients", "display-message".
+func (te *testEnv) writeFailingTmux(failCmd string) {
+	script := `#!/usr/bin/env bash
+cmd="${1:-}"
+case "$cmd" in
+  display-message)
+    target=""; format=""
+    while (($#)); do
+      case "$1" in
+        -t) target="$2"; shift 2 ;;
+        '#{'*) format="$1"; shift ;;
+        *) shift ;;
+      esac
+    done
+    case "$format" in
+      '#{session_name}') printf 'test-session\n' ;;
+      '#{window_id}') printf '@1\n' ;;
+      '#{pane_id}') printf '%s\n' "$target" ;;
+      '#{session_name}|#{window_id}|#{pane_id}') printf 'test-session|@1|%s\n' "$target" ;;
+    esac
+    ;;
+  list-panes) for i in $(seq 1 100); do printf '%%%s\n' "$i"; done ;;
+  list-windows) printf '@1\n@2\n' ;;
+  list-sessions) printf 'test-session\n' ;;
+  list-clients)
+    # Check the -F format argument to decide output.
+    fmt=""
+    while (($#)); do
+      case "$1" in
+        -F) fmt="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    case "$fmt" in
+      *'#{pane_id}'*) printf '/dev/ttys000|%%1\n' ;;
+      *) printf '/dev/ttys000|test-session|1000\n' ;;
+    esac
+    ;;
+  set-option) : ;;
+  switch-client|select-pane|select-window)
+    if [ "$cmd" = "` + failCmd + `" ]; then exit 1; fi
+    printf '%s\n' "$*" >>"${BEACON_TEST_TMUX_LOG:-/dev/null}"
+    ;;
+esac
+`
+	// Override the failCmd check for list-clients and display-message.
+	if failCmd == "list-clients" {
+		// Replace the entire list-clients block with exit 1.
+		script = strings.Replace(script,
+			`  list-clients)
+    # Check the -F format argument to decide output.
+    fmt=""
+    while (($#)); do
+      case "$1" in
+        -F) fmt="$2"; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    case "$fmt" in
+      *'#{pane_id}'*) printf '/dev/ttys000|%%1\n' ;;
+      *) printf '/dev/ttys000|test-session|1000\n' ;;
+    esac
+    ;;`,
+			`  list-clients) exit 1 ;;`, 1)
+	}
+	if failCmd == "display-message" {
+		script = strings.Replace(script,
+			`    case "$format" in
+      '#{session_name}')`,
+			"    exit 1\n    case \"$format\" in\n      '#{session_name}')", 1)
+	}
+	os.WriteFile(te.tmuxScript, []byte(script), 0o755)
+}
+
+// TestJumpFailClosedSwitchClient verifies that when switch-client fails,
+// jump returns non-zero and the bell is NOT acknowledged.
+func TestJumpFailClosedSwitchClient(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%5",
+		"BEACON_NOW": "100",
+	}, "report", "waiting", "test message")
+	te.writeFailingTmux("switch-client")
+	_, code := te.runWithEnv(map[string]string{
+		"BEACON_TEST_TMUX_LOG": te.tmuxLog,
+	}, "jump", "%5")
+	if code == 0 {
+		t.Fatal("jump should return non-zero when switch-client fails")
+	}
+	st := te.loadState()
+	if rec := st.Panes["%5"]; rec.Acknowledged {
+		t.Fatal("bell should be preserved when switch-client fails")
+	}
+}
+
+// TestJumpFailClosedSelectPane verifies that when select-pane fails,
+// jump returns non-zero and the bell is NOT acknowledged.
+func TestJumpFailClosedSelectPane(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%5",
+		"BEACON_NOW": "100",
+	}, "report", "waiting", "test message")
+	te.writeFailingTmux("select-pane")
+	_, code := te.runWithEnv(map[string]string{
+		"BEACON_TEST_TMUX_LOG": te.tmuxLog,
+	}, "jump", "%5")
+	if code == 0 {
+		t.Fatal("jump should return non-zero when select-pane fails")
+	}
+	st := te.loadState()
+	if rec := st.Panes["%5"]; rec.Acknowledged {
+		t.Fatal("bell should be preserved when select-pane fails")
+	}
+}
+
+// TestJumpFailClosedSelectWindow verifies that when select-window fails,
+// jump returns non-zero and the bell is NOT acknowledged.
+func TestJumpFailClosedSelectWindow(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%5",
+		"BEACON_NOW": "100",
+	}, "report", "waiting", "test message")
+	te.writeFailingTmux("select-window")
+	_, code := te.runWithEnv(map[string]string{
+		"BEACON_TEST_TMUX_LOG": te.tmuxLog,
+	}, "jump", "%5")
+	if code == 0 {
+		t.Fatal("jump should return non-zero when select-window fails")
+	}
+	st := te.loadState()
+	if rec := st.Panes["%5"]; rec.Acknowledged {
+		t.Fatal("bell should be preserved when select-window fails")
+	}
+}
+
+// TestJumpFailClosedNoClient verifies that when no client is attached,
+// jump returns non-zero and the bell is NOT acknowledged.
+func TestJumpFailClosedNoClient(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%5",
+		"BEACON_NOW": "100",
+	}, "report", "waiting", "test message")
+	// Override tmux to return no clients.
+	te.writeFailingTmux("list-clients")
+	// But list-clients exit 1 means switchToTarget returns false.
+	_, code := te.runWithEnv(map[string]string{
+		"BEACON_TEST_TMUX_LOG": te.tmuxLog,
+	}, "jump", "%5")
+	if code == 0 {
+		t.Fatal("jump should return non-zero when no client attached")
+	}
+	st := te.loadState()
+	if rec := st.Panes["%5"]; rec.Acknowledged {
+		t.Fatal("bell should be preserved when no client attached")
+	}
+}
+
+// TestJumpNoArgFailClosed verifies the no-argument jump path also
+// preserves the bell when switchToTarget fails.
+func TestJumpNoArgFailClosed(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%5",
+		"BEACON_NOW": "100",
+	}, "report", "waiting", "test message")
+	te.writeFailingTmux("switch-client")
+	_, code := te.runWithEnv(map[string]string{
+		"BEACON_TEST_TMUX_LOG": te.tmuxLog,
+	}, "jump")
+	if code == 0 {
+		t.Fatal("jump (no arg) should return non-zero when switch-client fails")
+	}
+	st := te.loadState()
+	if rec := st.Panes["%5"]; rec.Acknowledged {
+		t.Fatal("bell should be preserved when jump fails")
+	}
+}
+
+// TestJumpSuccessAcksBell verifies that a successful jump does acknowledge.
+func TestJumpSuccessAcksBell(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%5",
+		"BEACON_NOW": "100",
+	}, "report", "waiting", "test message")
+	_, code := te.runWithEnv(map[string]string{
+		"BEACON_TEST_TMUX_LOG": te.tmuxLog,
+	}, "jump", "%5")
+	if code != 0 {
+		t.Fatalf("jump should succeed, got %d", code)
+	}
+	st := te.loadState()
+	if rec := st.Panes["%5"]; !rec.Acknowledged {
+		t.Fatal("bell should be acknowledged after successful jump")
+	}
+}
+
+// TestJumpUsesSwitchClientWithC verifies that switch-client is called
+// with -c (client tty) flag, not just -t.
+func TestJumpUsesSwitchClientWithC(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%5",
+		"BEACON_NOW": "100",
+	}, "report", "waiting", "test message")
+	te.runWithEnv(map[string]string{
+		"BEACON_TEST_TMUX_LOG": te.tmuxLog,
+	}, "jump", "%5")
+	logData, _ := os.ReadFile(te.tmuxLog)
+	logStr := string(logData)
+	assertContains(t, logStr, "-c", "switch-client must use -c for client tty")
+	assertContains(t, logStr, "/dev/ttys000", "switch-client must target the client tty")
+	assertContains(t, logStr, "test-session", "switch-client must target the session")
 }

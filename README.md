@@ -32,9 +32,9 @@ and marked stale.
 
 | Tier | Interval | Metrics | macOS source | Linux source |
 |------|----------|---------|--------------|--------------|
-| Fast | 4s | CPU usage, memory pressure, process count | `top -l 1 -n 0`, `memory_pressure` | `/proc/stat`, `/proc/meminfo`, `ps aux` |
+| Fast | 4s | CPU usage, memory pressure, process count | `iostat -c 2 -w 1`, `memory_pressure`, `ps aux` | `/proc/stat`, `/proc/meminfo`, `ps aux` |
 | Footprint | 10s | per-pane/window/session/total tmux memory | `top -l 1 -n 999` (physical footprint) | `ps -eo pid,ppid,rss` (RSS) |
-| Slow | 60s | system memory used/total, root disk used/total | `vm_stat` + `sysctl hw.memsize`, `df -k /` | `/proc/meminfo`, `df -k /` |
+| Slow | 60s | system memory used/total, root disk used/total | `vm_stat` + `sysctl hw.memsize`, `df -k /System/Volumes/Data` | `/proc/meminfo`, `df -k /` |
 
 The fast tier (4s) matches the tmux 5s status refresh and never scans
 the full process list. The footprint tier (10s) runs `top -n 999` which
@@ -150,15 +150,37 @@ failure. `beacon doctor` reports daemon, socket, and cache freshness.
 
 ## Status bar segments
 
-Segments are ordered by priority; narrow widths drop lower-priority segments
-first. Strict display order: CPU, memory pressure, process count, pane
+Strict display order: CPU, memory pressure, process count, pane
 memory, window memory, session memory, total tmux memory, system memory,
-root disk. Priority determines what gets dropped first when width is narrow
-— disk drops first, CPU drops last.
+root disk. All available metrics are always rendered in fixed order;
+tmux handles truncation natively when the terminal is narrow.
 
 Agent notifications (waiting/blocked/completed) are not shown in
 status-right. They display as a bell icon in the session/window/pane
 name via event-driven tmux user options.
+
+### Notifications
+
+On macOS, Beacon prefers `terminal-notifier` (if installed) for desktop
+notifications. When a notification is triggered from a tmux pane, the
+notification includes a `-execute` action that activates the terminal
+app and runs `beacon jump <pane_id>` to switch the attached tmux client
+to the originating pane. Clicking the notification jumps directly to
+the pane that produced it.
+
+If `terminal-notifier` is not installed, Beacon falls back to `osascript`
+for basic notifications without click-to-jump.
+
+Install terminal-notifier via Homebrew:
+
+```
+brew install terminal-notifier
+```
+
+The `-execute` action uses the absolute path of the running beacon
+binary (via `os.Executable`), so it works even when the notification
+shell's PATH does not include `~/.local/bin`. All arguments are
+POSIX shell-quoted to prevent injection.
 
 | Segment | Icon | Color (bg) | Cadence |
 |---|---|---|---|
