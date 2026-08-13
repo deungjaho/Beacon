@@ -13,15 +13,55 @@ optional provider later, but local operation must never depend on a network.
 
 Beacon is a single Go binary with a background daemon:
 
-- `beacon daemon`: local daemon, samples host metrics every 4 seconds,
-  maintains an atomic snapshot cache, and listens on a Unix socket for
-  report/hook updates.
+- `beacon daemon`: local daemon, samples host metrics on a three-tier
+  cadence, maintains an atomic snapshot cache, and listens on a Unix
+  socket for report/hook updates.
 - `beacon report/status/status-tmux/jump/notify/doctor/reset/hook`: CLI
   commands that read the snapshot cache and agent state. `status-tmux` is
   read-only and never invokes subprocesses; it reads pre-sampled metrics
   from the daemon's cache and renders in-process (p95 < 5ms).
 - When the daemon is unreachable, `report` falls back to direct atomic file
   writes and `status-tmux` reads the last cached snapshot.
+
+### Sampling cadence
+
+The daemon samples metrics in three independent tiers, each with its own
+interval, `sampled_at` timestamp, and `stale` flag. On startup, all three
+tiers fire immediately. If a tier fails, last-good values are retained
+and marked stale.
+
+| Tier | Interval | Metrics | macOS source | Linux source |
+|------|----------|---------|--------------|--------------|
+| Fast | 4s | CPU usage, memory pressure, process count | `top -l 1 -n 0`, `memory_pressure` | `/proc/stat`, `/proc/meminfo`, `ps aux` |
+| Footprint | 10s | per-pane/window/session/total tmux memory | `top -l 1 -n 999` (physical footprint) | `ps -eo pid,ppid,rss` (RSS) |
+| Slow | 60s | system memory used/total, root disk used/total | `vm_stat` + `sysctl hw.memsize`, `df -k /` | `/proc/meminfo`, `df -k /` |
+
+The fast tier (4s) matches the tmux 5s status refresh and never scans
+the full process list. The footprint tier (10s) runs `top -n 999` which
+takes ~0.7s on a typical machine — well within the 10s budget. The slow
+tier (60s) uses lightweight system calls.
+
+### Memory metrics
+
+Per-process memory (`MemoryKB`) uses different semantics by platform:
+
+- **macOS**: physical footprint from `top`'s MEM column. This is the
+  actual physical memory consumed by the process, **not** MEM+CMPRS
+  (which would double-count compressed pages). The `MemoryKind` is
+  `"footprint"`.
+- **Linux**: RSS (resident set size) from `ps`. This is the standard
+  per-process memory metric on Linux. The `MemoryKind` is `"rss"`.
+
+System memory (used/total) is measured independently from per-process
+memory:
+
+- **macOS**: `vm_stat` free pages + `sysctl hw.memsize` total.
+  Used = total − (free + speculative) × page_size. This includes
+  wired, active, inactive, and compressor memory.
+- **Linux**: `/proc/meminfo` MemTotal − MemAvailable.
+
+System memory and per-process footprint are **not** summed — they are
+independent measurements displayed as separate segments.
 
 ## Capabilities
 
@@ -111,24 +151,26 @@ failure. `beacon doctor` reports daemon, socket, and cache freshness.
 ## Status bar segments
 
 Segments are ordered by priority; narrow widths drop lower-priority segments
-first. Priority order: Agent status, memory pressure, pane memory, CPU,
-window memory, session memory, total tmux memory, process count.
+first. Strict display order: CPU, memory pressure, process count, pane
+memory, window memory, session memory, total tmux memory, system memory,
+root disk. Priority determines what gets dropped first when width is narrow
+— disk drops first, CPU drops last.
 
-Icons and colors match the previous agent-tracker implementation:
+Agent notifications (waiting/blocked/completed) are not shown in
+status-right. They display as a bell icon in the session/window/pane
+name via event-driven tmux user options.
 
-| Segment | Icon | Color (bg) |
-|---|---|---|
-| CPU | `` | green/yellow/red by usage |
-| Memory pressure | `` | green/yellow/red by pressure |
-| Pane memory | `` | `#7CB8BB` |
-| Window memory | `󰖲` | `#5A8A8A` |
-| Session memory | `` | `#4A7A7A` |
-| Total tmux memory | `󰍛` | `#3A6A6A` |
-| Process count | `` | `#B48EAD` |
-| Agent working | `●` | `#F0DFAF` |
-| Agent completed | `✓` | `#7F9F7F` |
-| Agent waiting | `⚠` | `#CC9393` |
-| Agent blocked | `✗` | `#CC3333` |
+| Segment | Icon | Color (bg) | Cadence |
+|---|---|---|---|
+| CPU | `` | green/yellow/red by usage | 4s |
+| Memory pressure | `` | green/yellow/red by pressure | 4s |
+| Process count | `` | `#B48EAD` | 4s |
+| Pane memory | `` | `#7CB8BB` | 10s |
+| Window memory | `󰖲` | `#5A8A8A` | 10s |
+| Session memory | `` | `#4A7A7A` | 10s |
+| Total tmux memory | `󰍛` | `#3A6A6A` | 10s |
+| System memory | `󰈐` | `#2A5A5A` | 60s |
+| Root disk | `` | `#1A4A4A` | 60s |
 
 ## Boundaries
 

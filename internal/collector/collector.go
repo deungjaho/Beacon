@@ -1,6 +1,21 @@
 // Package collector implements bounded host and tmux resource sampling.
 // It never blocks the caller: all commands have timeouts and all parsers
 // degrade safely on missing or malformed input.
+//
+// Sampling is split into three tiers with independent cadence:
+//
+//   - Fast (4s): CPU usage, memory pressure, process count.
+//     Uses top -l 1 -n 0 (macOS) or /proc/stat + ps (Linux).
+//     Does NOT scan the full process list.
+//   - Footprint (10s): per-pane/window/session/total tmux memory.
+//     Uses top -l 1 -n 999 (macOS physical footprint) or ps -eo (Linux RSS).
+//     May also update CPU/proc count as a bonus but does not replace fast.
+//   - Slow (60s): system memory used/total and root disk usage.
+//     Uses vm_stat + sysctl (macOS) or /proc/meminfo (Linux), and df -k /.
+//
+// Each tier writes its own fields with its own sampled_at timestamp.
+// The daemon merges all tiers into a single snapshot and retains
+// last-good values with a stale flag when a tier fails.
 package collector
 
 import (
@@ -14,22 +29,55 @@ import (
 )
 
 // Metrics is the full resource snapshot written by the daemon.
+// Fields are grouped by sampling tier; each tier has its own
+// sampled_at and stale metadata.
 type Metrics struct {
-	SampledAt     int64             `json:"sampled_at"`
-	CPUPercent    float64           `json:"cpu_percent"`
-	CPUOK         bool              `json:"cpu_ok"`
-	MemPressure   int               `json:"mem_pressure"`
-	MemPressureOK bool              `json:"mem_pressure_ok"`
-	ProcCount     int               `json:"proc_count"`
-	ProcCountOK   bool              `json:"proc_count_ok"`
-	PaneMemKB     map[string]uint64 `json:"pane_mem_kb"`
-	WindowMemKB   map[string]uint64 `json:"window_mem_kb"`
-	SessionMemKB  map[string]uint64 `json:"session_mem_kb"`
-	TotalMemKB    uint64            `json:"total_mem_kb"`
-	PaneMem       map[string]string `json:"pane_mem"`
-	WindowMem     map[string]string `json:"window_mem"`
-	SessionMem    map[string]string `json:"session_mem"`
-	TotalMem      string            `json:"total_mem"`
+	SampledAt int64 `json:"sampled_at"` // overall snapshot time
+
+	// --- Fast tier (4s) ---
+	CPUPercent    float64 `json:"cpu_percent"`
+	CPUOK         bool    `json:"cpu_ok"`
+	CPUSampledAt  int64   `json:"cpu_sampled_at"`
+	CPUStale      bool    `json:"cpu_stale"`
+	MemPressure   int     `json:"mem_pressure"`
+	MemPressureOK bool    `json:"mem_pressure_ok"`
+	ProcCount     int     `json:"proc_count"`
+	ProcCountOK   bool    `json:"proc_count_ok"`
+
+	// --- Footprint tier (10s) ---
+	// Per-pane/window/session/total tmux memory.
+	// macOS: physical footprint from top MEM column.
+	// Linux: RSS from ps.
+	PaneMemKB      map[string]uint64 `json:"pane_mem_kb"`
+	WindowMemKB    map[string]uint64 `json:"window_mem_kb"`
+	SessionMemKB   map[string]uint64 `json:"session_mem_kb"`
+	TotalMemKB     uint64            `json:"total_mem_kb"`
+	PaneMem        map[string]string `json:"pane_mem"`
+	WindowMem      map[string]string `json:"window_mem"`
+	SessionMem     map[string]string `json:"session_mem"`
+	TotalMem       string            `json:"total_mem"`
+	FootprintOK    bool              `json:"footprint_ok"`
+	FootprintAt    int64             `json:"footprint_sampled_at"`
+	FootprintStale bool              `json:"footprint_stale"`
+
+	// --- Slow tier (60s) ---
+	// System memory used/total (physical RAM, includes compressor on macOS).
+	SysMemUsedKB    uint64 `json:"sys_mem_used_kb"`
+	SysMemTotalKB   uint64 `json:"sys_mem_total_kb"`
+	SysMemOK        bool   `json:"sys_mem_ok"`
+	SysMemSampledAt int64  `json:"sys_mem_sampled_at"`
+	SysMemStale     bool   `json:"sys_mem_stale"`
+	SysMemUsed      string `json:"sys_mem_used"`
+	SysMemTotal     string `json:"sys_mem_total"`
+
+	// Root disk usage used/total.
+	DiskUsedKB    uint64 `json:"disk_used_kb"`
+	DiskTotalKB   uint64 `json:"disk_total_kb"`
+	DiskOK        bool   `json:"disk_ok"`
+	DiskSampledAt int64  `json:"disk_sampled_at"`
+	DiskStale     bool   `json:"disk_stale"`
+	DiskUsed      string `json:"disk_used"`
+	DiskTotal     string `json:"disk_total"`
 }
 
 // tmuxPane is a single pane entry from tmux list-panes.
@@ -41,25 +89,45 @@ type tmuxPane struct {
 	PanePID     int
 }
 
-// procInfo is a single process entry from ps.
+// MemoryKind identifies what MemoryKB represents on the current platform.
+type MemoryKind string
+
+const (
+	// MemoryKindFootprint: macOS physical footprint from top's MEM column.
+	// This is the actual physical memory consumed by the process, not
+	// MEM+CMPRS (which would double-count compressed pages).
+	MemoryKindFootprint MemoryKind = "footprint"
+	// MemoryKindRSS: Linux resident set size from ps. This is the standard
+	// per-process memory metric on Linux.
+	MemoryKindRSS MemoryKind = "rss"
+)
+
+// procInfo is a single process entry from ps or top.
+// MemoryKB is the unified per-process memory metric; MemoryKind identifies
+// what it represents (footprint on macOS, RSS on Linux).
 type procInfo struct {
-	PID  int
-	PPID int
-	RSS  uint64 // KB
+	PID        int
+	PPID       int
+	MemoryKB   uint64     // per-process memory in KB
+	MemoryKind MemoryKind // semantic of MemoryKB (platform-dependent)
 }
 
-// PaneMemoryResult holds the aggregated memory maps.
+// paneMemoryResult holds the aggregated memory maps (in KB).
+// All values use the same MemoryKind as the source process entries.
 type paneMemoryResult struct {
 	PaneMem    map[string]uint64
 	WindowMem  map[string]uint64
 	SessionMem map[string]uint64
 	TotalMem   uint64
+	Kind       MemoryKind // what the aggregated values represent
 }
 
 var cpuUsagePattern = regexp.MustCompile(`CPU usage:\s*([0-9.]+)% user,\s*([0-9.]+)% sys,`)
 var memPressurePattern = regexp.MustCompile(`System-wide memory free percentage:\s*(\d+)%`)
+var procCountPattern = regexp.MustCompile(`Processes:\s*(\d+)\s+total,`)
 
 // commandTimeout is the max wait for any subprocess.
+// iostat -c 2 -w 1 takes ~1s; allow headroom.
 const commandTimeout = 5 * time.Second
 
 // runCommand runs a command with a bounded timeout and returns its stdout.
@@ -72,7 +140,9 @@ func runCommand(name string, args ...string) ([]byte, error) {
 	return cmd.Output()
 }
 
-// parseMacOSCPUUsageTotal extracts user+sys from top output.
+// --- Shared parsers ---
+
+// parseMacOSCPUUsageTotal extracts user+sys from top output (legacy fallback).
 func parseMacOSCPUUsageTotal(output string) (float64, bool) {
 	matches := cpuUsagePattern.FindStringSubmatch(output)
 	if len(matches) != 3 {
@@ -87,6 +157,49 @@ func parseMacOSCPUUsageTotal(output string) (float64, bool) {
 		return 0, false
 	}
 	total := user + system
+	if total < 0 {
+		total = 0
+	}
+	if total > 100 {
+		total = 100
+	}
+	return total, true
+}
+
+// parseMacOSIOStatCPU parses `iostat -c 2 -w 1` output and returns
+// us+sy from the second sample. The output has a header line, a first
+// data line, and a second data line. The CPU columns are us, sy, id
+// (positions 4, 5, 6 in the data row after disk columns).
+//
+// Example output:
+//
+//	           disk0       cpu    load average
+//	 KB/t  tps  MB/s  us sy id   1m   5m   15m
+//	14.78  347  5.01  12 11 78  13.22 12.80 8.56
+//	39.66 1380 53.44  14 11 75  13.22 12.80 8.56
+//
+// We parse the last data line and extract us+sy.
+func parseMacOSIOStatCPU(output string) (float64, bool) {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	if len(lines) < 4 {
+		return 0, false
+	}
+	// The last line is the second sample.
+	lastLine := strings.TrimSpace(lines[len(lines)-1])
+	fields := strings.Fields(lastLine)
+	if len(fields) < 6 {
+		return 0, false
+	}
+	// CPU columns are us(4th), sy(5th), id(6th) — 0-indexed: 3, 4, 5.
+	us, err := strconv.ParseFloat(fields[3], 64)
+	if err != nil {
+		return 0, false
+	}
+	sy, err := strconv.ParseFloat(fields[4], 64)
+	if err != nil {
+		return 0, false
+	}
+	total := us + sy
 	if total < 0 {
 		total = 0
 	}
@@ -116,6 +229,19 @@ func parseMacOSMemPressure(output string) (int, bool) {
 	return pressure, true
 }
 
+// parseMacOSProcCount extracts the process count from top's "Processes: N total" line.
+func parseMacOSProcCount(output string) (int, bool) {
+	matches := procCountPattern.FindStringSubmatch(output)
+	if len(matches) != 2 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(matches[1])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
 // parseProcCount counts non-header lines from ps aux.
 func parseProcCount(output string) int {
 	scanner := bufio.NewScanner(strings.NewReader(output))
@@ -134,8 +260,78 @@ func parseProcCount(output string) int {
 	return count
 }
 
-// parsePsPidPpidRss parses `ps -eo pid,ppid,rss` output.
-func parsePsPidPpidRss(output string) []procInfo {
+// parseMacOSTopProcesses parses `top -l 1 -n 999 -o mem -stats pid,mem,ppid` output.
+// Returns process list with physical footprint (MEM column) in KB.
+// The MEM column uses suffixes: K (KB), M (MB), G (GB).
+func parseMacOSTopProcesses(output string) []procInfo {
+	var procs []procInfo
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	inProcessSection := false
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Detect the process table header: "PID    MEM   PPID"
+		if !inProcessSection {
+			if strings.HasPrefix(strings.TrimSpace(line), "PID") && strings.Contains(line, "MEM") {
+				inProcessSection = true
+			}
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+		footprintKB, ok := parseMemColumn(fields[1])
+		if !ok {
+			continue
+		}
+		ppid, err := strconv.Atoi(fields[2])
+		if err != nil {
+			continue
+		}
+		procs = append(procs, procInfo{
+			PID:        pid,
+			PPID:       ppid,
+			MemoryKB:   footprintKB,
+			MemoryKind: MemoryKindFootprint,
+		})
+	}
+	return procs
+}
+
+// parseMemColumn parses a top MEM column value (e.g. "1144M", "856K", "2G") into KB.
+func parseMemColumn(s string) (uint64, bool) {
+	if len(s) == 0 {
+		return 0, false
+	}
+	suffix := s[len(s)-1]
+	numPart := s
+	multiplier := uint64(1)
+	switch suffix {
+	case 'K', 'k':
+		multiplier = 1
+		numPart = s[:len(s)-1]
+	case 'M', 'm':
+		multiplier = 1024
+		numPart = s[:len(s)-1]
+	case 'G', 'g':
+		multiplier = 1024 * 1024
+		numPart = s[:len(s)-1]
+	}
+	val, err := strconv.ParseFloat(numPart, 64)
+	if err != nil {
+		return 0, false
+	}
+	return uint64(val * float64(multiplier)), true
+}
+
+// parsePsPidPpidMemory parses `ps -eo pid,ppid,rss` output.
+// On Linux, RSS is the standard per-process memory metric and is stored
+// directly in MemoryKB with MemoryKind=MemoryKindRSS.
+func parsePsPidPpidMemory(output string) []procInfo {
 	var procs []procInfo
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	first := true
@@ -156,11 +352,11 @@ func parsePsPidPpidRss(output string) []procInfo {
 		if err != nil {
 			continue
 		}
-		rss, err := strconv.ParseUint(fields[2], 10, 64)
+		memKB, err := strconv.ParseUint(fields[2], 10, 64)
 		if err != nil {
 			continue
 		}
-		procs = append(procs, procInfo{PID: pid, PPID: ppid, RSS: rss})
+		procs = append(procs, procInfo{PID: pid, PPID: ppid, MemoryKB: memKB, MemoryKind: MemoryKindRSS})
 	}
 	return procs
 }
@@ -174,13 +370,13 @@ func buildChildrenMap(procs []procInfo) map[int][]int {
 	return children
 }
 
-// sumDescendantRSS sums RSS of the given root PID and all its descendants.
-// Each process is counted at most once.
-func sumDescendantRSS(rootPID int, children map[int][]int, rssByPid map[int]uint64) uint64 {
+// sumDescendantMemory sums MemoryKB of the given root PID and all its
+// descendants. Each process is counted at most once.
+func sumDescendantMemory(rootPID int, children map[int][]int, memByPid map[int]uint64) uint64 {
 	visited := map[int]bool{rootPID: true}
 	var total uint64
-	if rss, ok := rssByPid[rootPID]; ok {
-		total += rss
+	if mem, ok := memByPid[rootPID]; ok {
+		total += mem
 	}
 	stack := []int{rootPID}
 	for len(stack) > 0 {
@@ -191,7 +387,7 @@ func sumDescendantRSS(rootPID int, children map[int][]int, rssByPid map[int]uint
 				continue
 			}
 			visited[child] = true
-			total += rssByPid[child]
+			total += memByPid[child]
 			stack = append(stack, child)
 		}
 	}
@@ -226,19 +422,17 @@ func parseTmuxPanes(output string) []tmuxPane {
 	return panes
 }
 
-// aggregatePaneMemory walks each pane's process tree and aggregates RSS.
+// aggregatePaneMemory walks each pane's process tree and aggregates MemoryKB.
 // Each process is counted under exactly one pane (the one whose tree contains it).
-func aggregatePaneMemory(panes []tmuxPane, children map[int][]int, rssByPid map[int]uint64) paneMemoryResult {
+func aggregatePaneMemory(panes []tmuxPane, children map[int][]int, memByPid map[int]uint64) paneMemoryResult {
 	result := paneMemoryResult{
 		PaneMem:    map[string]uint64{},
 		WindowMem:  map[string]uint64{},
 		SessionMem: map[string]uint64{},
 	}
-	// Track which processes have been claimed by a pane to avoid double-counting
-	// in case of PID reuse or shared process trees.
 	claimed := map[int]bool{}
 	for _, pane := range panes {
-		total := sumDescendantRSSClaimed(pane.PanePID, children, rssByPid, claimed)
+		total := sumDescendantMemoryClaimed(pane.PanePID, children, memByPid, claimed)
 		result.PaneMem[pane.PaneID] = total
 		wkey := pane.Session + ":" + pane.WindowIndex
 		result.WindowMem[wkey] += total
@@ -248,17 +442,17 @@ func aggregatePaneMemory(panes []tmuxPane, children map[int][]int, rssByPid map[
 	return result
 }
 
-// sumDescendantRSSClaimed is like sumDescendantRSS but skips processes already
-// claimed by another pane.
-func sumDescendantRSSClaimed(rootPID int, children map[int][]int, rssByPid map[int]uint64, claimed map[int]bool) uint64 {
+// sumDescendantMemoryClaimed is like sumDescendantMemory but skips processes
+// already claimed by another pane.
+func sumDescendantMemoryClaimed(rootPID int, children map[int][]int, memByPid map[int]uint64, claimed map[int]bool) uint64 {
 	if claimed[rootPID] {
 		return 0
 	}
 	visited := map[int]bool{rootPID: true}
 	claimed[rootPID] = true
 	var total uint64
-	if rss, ok := rssByPid[rootPID]; ok {
-		total += rss
+	if mem, ok := memByPid[rootPID]; ok {
+		total += mem
 	}
 	stack := []int{rootPID}
 	for len(stack) > 0 {
@@ -270,11 +464,16 @@ func sumDescendantRSSClaimed(rootPID int, children map[int][]int, rssByPid map[i
 			}
 			visited[child] = true
 			claimed[child] = true
-			total += rssByPid[child]
+			total += memByPid[child]
 			stack = append(stack, child)
 		}
 	}
 	return total
+}
+
+// FormatMemoryMB converts KB to a human-readable string (M or G).
+func FormatMemoryMB(kb uint64) string {
+	return formatMemoryMB(kb)
 }
 
 // formatMemoryMB converts KB to a human-readable string (M or G).
@@ -334,7 +533,6 @@ func parseLinuxCPUStat(output string) (uint64, uint64, bool) {
 		if len(fields) < 5 {
 			return 0, 0, false
 		}
-		// fields[0] = "cpu", fields[1..] = user nice system idle iowait irq softirq steal
 		var total, idle uint64
 		for i, f := range fields[1:] {
 			val, err := strconv.ParseUint(f, 10, 64)
@@ -415,9 +613,121 @@ func linuxMemPressurePercent(total, avail uint64) int {
 	return int(pct)
 }
 
+// --- System memory parsers ---
+
+// parseMacOSVmStat parses vm_stat output and returns (usedBytes, totalBytes, ok).
+// totalBytes comes from sysctl hw.memsize (passed separately).
+// used = total - (freePages + speculativePages) * pageSize.
+// This includes wired, active, inactive, and compressor memory.
+func parseMacOSVmStat(output string, totalBytes uint64) (uint64, bool) {
+	pageSize := uint64(16384) // default
+	var freePages, specPages uint64
+	pageSizeFound := false
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.Contains(line, "page size of") {
+			// "Mach Virtual Memory Statistics: (page size of 16384 bytes)"
+			start := strings.Index(line, "page size of ")
+			if start < 0 {
+				continue
+			}
+			rest := line[start+len("page size of "):]
+			end := strings.Index(rest, " ")
+			if end < 0 {
+				continue
+			}
+			ps, err := strconv.ParseUint(rest[:end], 10, 64)
+			if err == nil && ps > 0 {
+				pageSize = ps
+				pageSizeFound = true
+			}
+		}
+		switch {
+		case strings.HasPrefix(line, "Pages free:"):
+			freePages = parseVmStatCount(line)
+		case strings.HasPrefix(line, "Pages speculative:"):
+			specPages = parseVmStatCount(line)
+		}
+	}
+	if !pageSizeFound && freePages == 0 && specPages == 0 {
+		// No useful data parsed.
+		return 0, false
+	}
+	free := (freePages + specPages) * pageSize
+	if free > totalBytes {
+		free = totalBytes
+	}
+	used := totalBytes - free
+	return used, true
+}
+
+// parseVmStatCount extracts the integer count from a vm_stat line like
+// "Pages free: 10261."
+func parseVmStatCount(line string) uint64 {
+	idx := strings.Index(line, ":")
+	if idx < 0 {
+		return 0
+	}
+	rest := strings.TrimSpace(line[idx+1:])
+	rest = strings.TrimRight(rest, ".")
+	val, err := strconv.ParseUint(rest, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return val
+}
+
+// parseSysctlMemSize parses sysctl hw.memsize output (e.g. "hw.memsize: 17179869184").
+func parseSysctlMemSize(output string) (uint64, bool) {
+	fields := strings.Fields(strings.TrimSpace(output))
+	if len(fields) < 2 {
+		return 0, false
+	}
+	val, err := strconv.ParseUint(fields[len(fields)-1], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return val, true
+}
+
+// --- Disk usage parser ---
+
+// parseDfOutput parses `df -k /` output and returns (usedKB, totalKB, ok).
+// Expected format: "Filesystem 1K-blocks Used Available Capacity Mounted on\n/dev/... 239362496 12346296 11785340 52% /"
+func parseDfOutput(output string) (uint64, uint64, bool) {
+	scanner := bufio.NewScanner(strings.NewReader(output))
+	first := true
+	for scanner.Scan() {
+		if first {
+			first = false
+			continue
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		total, err := strconv.ParseUint(fields[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		used, err := strconv.ParseUint(fields[2], 10, 64)
+		if err != nil {
+			continue
+		}
+		return used, total, true
+	}
+	return 0, 0, false
+}
+
 // --- Collector ---
 
-// Collector samples host and tmux metrics. It is safe for concurrent use.
+// Collector samples host and tmux metrics across three cadence tiers.
+// It is safe for concurrent use.
 type Collector struct {
 	tmuxBin       string
 	os            string
@@ -431,128 +741,213 @@ func NewCollector(osName, tmuxBin string) *Collector {
 	return &Collector{os: osName, tmuxBin: tmuxBin}
 }
 
-// Sample collects all metrics in a single pass. It never panics and never
-// blocks longer than commandTimeout per command.
-func (c *Collector) Sample() Metrics {
-	m := Metrics{
-		SampledAt:    time.Now().Unix(),
-		PaneMemKB:    map[string]uint64{},
-		WindowMemKB:  map[string]uint64{},
-		SessionMemKB: map[string]uint64{},
-		PaneMem:      map[string]string{},
-		WindowMem:    map[string]string{},
-		SessionMem:   map[string]string{},
-	}
+// SampleFast collects fast-tier metrics: CPU, memory pressure, process count.
+// It does NOT scan the full process list.
+//
+// macOS sources (low CPU overhead):
+//   - CPU: iostat -c 2 -w 1 (~1s wall, ~0 CPU; us+sy from 2nd sample)
+//   - process count: ps aux (~0.02s)
+//   - memory pressure: memory_pressure (~0s)
+//
+// Linux sources:
+//   - CPU: /proc/stat (delta from previous sample)
+//   - process count: ps aux
+//   - memory pressure: /proc/meminfo (MemTotal - MemAvailable)
+func (c *Collector) SampleFast() (cpu float64, cpuOK bool, pressure int, pressureOK bool, procCount int, procCountOK bool) {
 	var wg sync.WaitGroup
-	wg.Add(4)
-	go func() { defer wg.Done(); c.sampleCPU(&m) }()
-	go func() { defer wg.Done(); c.sampleMemPressure(&m) }()
-	go func() { defer wg.Done(); c.sampleProcCount(&m) }()
-	go func() { defer wg.Done(); c.samplePaneMemory(&m) }()
+	var cpuOut, pressureOut, procOut []byte
+	var cpuErr, pressureErr, procErr error
+
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		cpuOut, cpuErr = c.sampleCPUOutput()
+	}()
+	go func() {
+		defer wg.Done()
+		pressureOut, pressureErr = c.sampleMemPressureOutput()
+	}()
+	go func() {
+		defer wg.Done()
+		procOut, procErr = c.sampleProcCountOutput()
+	}()
 	wg.Wait()
-	return m
+
+	// Parse CPU.
+	if cpuErr == nil {
+		switch c.os {
+		case "darwin":
+			cpu, cpuOK = parseMacOSIOStatCPU(string(cpuOut))
+		case "linux":
+			cpu, cpuOK = c.parseLinuxCPU(string(cpuOut))
+		}
+	}
+
+	// Parse memory pressure.
+	if pressureErr == nil {
+		switch c.os {
+		case "darwin":
+			pressure, pressureOK = parseMacOSMemPressure(string(pressureOut))
+		case "linux":
+			total, avail, ok := parseLinuxMemInfo(string(pressureOut))
+			if ok {
+				pressure = linuxMemPressurePercent(total, avail)
+				pressureOK = true
+			}
+		}
+	}
+
+	// Parse process count.
+	if procErr == nil {
+		procCount = parseProcCount(string(procOut))
+		procCountOK = true
+	}
+
+	return
 }
 
-func (c *Collector) sampleCPU(m *Metrics) {
+// sampleCPUOutput returns raw CPU output for parsing.
+// macOS: iostat -c 2 -w 1. Linux: /proc/stat.
+func (c *Collector) sampleCPUOutput() ([]byte, error) {
 	switch c.os {
 	case "darwin":
-		out, err := runCommand("top", "-l", "1", "-n", "0")
-		if err != nil {
-			return
-		}
-		val, ok := parseMacOSCPUUsageTotal(string(out))
-		if ok {
-			m.CPUPercent = val
-			m.CPUOK = true
-		}
+		return runCommand("iostat", "-c", "2", "-w", "1")
 	case "linux":
-		out, err := runCommand("cat", "/proc/stat")
-		if err != nil {
-			return
-		}
-		total, idle, ok := parseLinuxCPUStat(string(out))
-		if !ok {
-			return
-		}
-		c.mu.Lock()
-		prevTotal, prevIdle := c.prevLinuxCPU, c.prevLinuxIdle
-		c.prevLinuxCPU = total
-		c.prevLinuxIdle = idle
-		c.mu.Unlock()
-		if prevTotal > 0 {
-			m.CPUPercent = computeLinuxCPUPercent(prevTotal, prevIdle, total, idle)
-			m.CPUOK = true
-		}
+		return runCommand("cat", "/proc/stat")
 	}
+	return nil, exec.ErrNotFound
 }
 
-func (c *Collector) sampleMemPressure(m *Metrics) {
+// sampleProcCountOutput returns raw process count output.
+// Both macOS and Linux: ps aux.
+func (c *Collector) sampleProcCountOutput() ([]byte, error) {
+	return runCommand("ps", "aux")
+}
+
+// sampleMemPressureOutput returns raw pressure output.
+// macOS: memory_pressure. Linux: /proc/meminfo.
+func (c *Collector) sampleMemPressureOutput() ([]byte, error) {
 	switch c.os {
 	case "darwin":
-		out, err := runCommand("memory_pressure")
-		if err != nil {
-			return
-		}
-		val, ok := parseMacOSMemPressure(string(out))
-		if ok {
-			m.MemPressure = val
-			m.MemPressureOK = true
-		}
+		return runCommand("memory_pressure")
 	case "linux":
-		out, err := runCommand("cat", "/proc/meminfo")
-		if err != nil {
-			return
-		}
-		total, avail, ok := parseLinuxMemInfo(string(out))
-		if ok {
-			m.MemPressure = linuxMemPressurePercent(total, avail)
-			m.MemPressureOK = true
-		}
+		return runCommand("cat", "/proc/meminfo")
 	}
+	return nil, exec.ErrNotFound
 }
 
-func (c *Collector) sampleProcCount(m *Metrics) {
-	out, err := runCommand("ps", "aux")
-	if err != nil {
-		return
+// parseLinuxCPU parses /proc/stat and computes CPU percentage using delta.
+func (c *Collector) parseLinuxCPU(output string) (float64, bool) {
+	total, idle, ok := parseLinuxCPUStat(output)
+	if !ok {
+		return 0, false
 	}
-	m.ProcCount = parseProcCount(string(out))
-	m.ProcCountOK = true
+	c.mu.Lock()
+	prevTotal, prevIdle := c.prevLinuxCPU, c.prevLinuxIdle
+	c.prevLinuxCPU = total
+	c.prevLinuxIdle = idle
+	c.mu.Unlock()
+	if prevTotal > 0 {
+		return computeLinuxCPUPercent(prevTotal, prevIdle, total, idle), true
+	}
+	return 0, false
 }
 
-func (c *Collector) samplePaneMemory(m *Metrics) {
+// SampleFootprint collects per-pane/window/session/total tmux memory.
+// macOS: top -l 1 -n 999 -o mem -stats pid,mem,ppid (physical footprint).
+// Linux: ps -eo pid,ppid,rss (RSS).
+// Returns nil result and false on failure. The result.Kind field indicates
+// what the memory values represent (footprint on macOS, RSS on Linux).
+func (c *Collector) SampleFootprint() (paneMemoryResult, bool) {
 	panesOut, err := runCommand(c.tmuxBin, "list-panes", "-a", "-F",
 		"#{session_name}|#{window_index}|#{window_id}|#{pane_id}|#{pane_pid}")
 	if err != nil {
-		return
+		return paneMemoryResult{}, false
 	}
 	panes := parseTmuxPanes(string(panesOut))
 	if len(panes) == 0 {
-		return
+		return paneMemoryResult{}, true // no panes, but not an error
 	}
-	psOut, err := runCommand("ps", "-eo", "pid,ppid,rss")
-	if err != nil {
-		return
+
+	var procs []procInfo
+	var kind MemoryKind
+	switch c.os {
+	case "darwin":
+		topOut, err := runCommand("top", "-l", "1", "-n", "999", "-o", "mem", "-stats", "pid,mem,ppid")
+		if err != nil {
+			return paneMemoryResult{}, false
+		}
+		procs = parseMacOSTopProcesses(string(topOut))
+		kind = MemoryKindFootprint
+	case "linux":
+		psOut, err := runCommand("ps", "-eo", "pid,ppid,rss")
+		if err != nil {
+			return paneMemoryResult{}, false
+		}
+		procs = parsePsPidPpidMemory(string(psOut))
+		kind = MemoryKindRSS
+	default:
+		return paneMemoryResult{}, false
 	}
-	procs := parsePsPidPpidRss(string(psOut))
+	if len(procs) == 0 {
+		return paneMemoryResult{}, false
+	}
+
 	children := buildChildrenMap(procs)
-	rssByPid := make(map[int]uint64, len(procs))
+	memByPid := make(map[int]uint64, len(procs))
 	for _, p := range procs {
-		rssByPid[p.PID] = p.RSS
+		memByPid[p.PID] = p.MemoryKB
 	}
-	result := aggregatePaneMemory(panes, children, rssByPid)
-	m.PaneMemKB = result.PaneMem
-	m.WindowMemKB = result.WindowMem
-	m.SessionMemKB = result.SessionMem
-	m.TotalMemKB = result.TotalMem
-	for k, v := range result.PaneMem {
-		m.PaneMem[k] = formatMemoryMB(v)
+	result := aggregatePaneMemory(panes, children, memByPid)
+	result.Kind = kind
+	return result, true
+}
+
+// SampleSystemMemory collects system memory used/total in bytes.
+// macOS: vm_stat + sysctl hw.memsize.
+// Linux: /proc/meminfo (MemTotal - MemAvailable).
+// Returns (usedBytes, totalBytes, ok).
+func (c *Collector) SampleSystemMemory() (uint64, uint64, bool) {
+	switch c.os {
+	case "darwin":
+		vmOut, err := runCommand("vm_stat")
+		if err != nil {
+			return 0, 0, false
+		}
+		sysctlOut, err := runCommand("sysctl", "hw.memsize")
+		if err != nil {
+			return 0, 0, false
+		}
+		total, ok := parseSysctlMemSize(string(sysctlOut))
+		if !ok {
+			return 0, 0, false
+		}
+		used, ok := parseMacOSVmStat(string(vmOut), total)
+		if !ok {
+			return 0, 0, false
+		}
+		return used, total, true
+	case "linux":
+		out, err := runCommand("cat", "/proc/meminfo")
+		if err != nil {
+			return 0, 0, false
+		}
+		total, avail, ok := parseLinuxMemInfo(string(out))
+		if !ok {
+			return 0, 0, false
+		}
+		used := total - avail
+		return used, total, true
 	}
-	for k, v := range result.WindowMem {
-		m.WindowMem[k] = formatMemoryMB(v)
+	return 0, 0, false
+}
+
+// SampleDisk collects root disk usage used/total in KB.
+// Uses `df -k /` on both macOS and Linux.
+func (c *Collector) SampleDisk() (uint64, uint64, bool) {
+	out, err := runCommand("df", "-k", "/")
+	if err != nil {
+		return 0, 0, false
 	}
-	for k, v := range result.SessionMem {
-		m.SessionMem[k] = formatMemoryMB(v)
-	}
-	m.TotalMem = formatMemoryMB(result.TotalMem)
+	return parseDfOutput(string(out))
 }

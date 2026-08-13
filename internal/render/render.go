@@ -7,7 +7,8 @@
 // bell in the session/window/pane name (handled by the dotfile tmux
 // status scripts). This renderer shows only resource metrics in a
 // strict order: CPU, memory pressure, process count, pane memory,
-// window memory, session memory, total tmux memory.
+// window memory, session memory, total tmux memory, system memory,
+// root disk usage.
 package render
 
 import (
@@ -44,13 +45,15 @@ const (
 	iconTotalMem    = "\U000F035B"
 	iconProcCount   = "\uf46c"
 	iconMemPressure = "\uf080"
+	iconSysMem      = "\U000F0210" // memory icon for system RAM (U+F0210)
+	iconDisk        = "\uf0a0"     // disk icon (U+F0A0)
 
 	minWidth = 80
 
 	// Priority order for narrow-width trimming. Higher priority = kept longer.
 	// Strict display order is CPU, pressure, proc count, pane mem, window mem,
-	// session mem, total mem. Priority determines what gets dropped first when
-	// width is narrow — total mem drops first, CPU drops last.
+	// session mem, total mem, system mem, disk. Priority determines what gets
+	// dropped first when width is narrow — disk drops first, CPU drops last.
 	prioCPU        = 0
 	prioPressure   = 1
 	prioProcCount  = 2
@@ -58,6 +61,8 @@ const (
 	prioWindowMem  = 4
 	prioSessionMem = 5
 	prioTotalMem   = 6
+	prioSysMem     = 7
+	prioDisk       = 8
 )
 
 // Render produces the final tmux status-right string.
@@ -83,7 +88,7 @@ func Render(args Args, m collector.Metrics) string {
 
 // buildSegments builds resource-only segments in strict order:
 // CPU, memory pressure, process count, pane memory, window memory,
-// session memory, total tmux memory.
+// session memory, total tmux memory, system memory, root disk usage.
 func buildSegments(args Args, m collector.Metrics) []Segment {
 	var segs []Segment
 
@@ -92,7 +97,7 @@ func buildSegments(args Args, m collector.Metrics) []Segment {
 		segs = append(segs, Segment{
 			FG:       "#1d1f21",
 			BG:       collector.CPUBGColor(m.CPUPercent),
-			Text:     fmt.Sprintf(" %s %s ", iconCPU, collector.FormatUsagePercent(m.CPUPercent)),
+			Text:     fmt.Sprintf("%s %s", iconCPU, collector.FormatUsagePercent(m.CPUPercent)),
 			Bold:     true,
 			Priority: prioCPU,
 		})
@@ -103,7 +108,7 @@ func buildSegments(args Args, m collector.Metrics) []Segment {
 		segs = append(segs, Segment{
 			FG:       "#1d1f21",
 			BG:       collector.MemPressureColor(m.MemPressure),
-			Text:     fmt.Sprintf(" %s %d%% ", iconMemPressure, m.MemPressure),
+			Text:     fmt.Sprintf("%s %d%%", iconMemPressure, m.MemPressure),
 			Bold:     true,
 			Priority: prioPressure,
 		})
@@ -114,7 +119,7 @@ func buildSegments(args Args, m collector.Metrics) []Segment {
 		segs = append(segs, Segment{
 			FG:       "#1d1f21",
 			BG:       "#B48EAD",
-			Text:     fmt.Sprintf(" %s %d ", iconProcCount, m.ProcCount),
+			Text:     fmt.Sprintf("%s %d", iconProcCount, m.ProcCount),
 			Bold:     true,
 			Priority: prioProcCount,
 		})
@@ -126,7 +131,7 @@ func buildSegments(args Args, m collector.Metrics) []Segment {
 			segs = append(segs, Segment{
 				FG:       "#1d1f21",
 				BG:       "#7CB8BB",
-				Text:     fmt.Sprintf(" %s %s ", iconPaneMem, v),
+				Text:     fmt.Sprintf("%s %s", iconPaneMem, v),
 				Priority: prioPaneMem,
 			})
 		}
@@ -138,7 +143,7 @@ func buildSegments(args Args, m collector.Metrics) []Segment {
 		segs = append(segs, Segment{
 			FG:       "#F4F4E6",
 			BG:       "#5A8A8A",
-			Text:     fmt.Sprintf(" %s %s ", iconWindowMem, v),
+			Text:     fmt.Sprintf("%s %s", iconWindowMem, v),
 			Priority: prioWindowMem,
 		})
 	}
@@ -148,7 +153,7 @@ func buildSegments(args Args, m collector.Metrics) []Segment {
 		segs = append(segs, Segment{
 			FG:       "#F4F4E6",
 			BG:       "#4A7A7A",
-			Text:     fmt.Sprintf(" %s %s ", iconSessionMem, v),
+			Text:     fmt.Sprintf("%s %s", iconSessionMem, v),
 			Priority: prioSessionMem,
 		})
 	}
@@ -158,8 +163,28 @@ func buildSegments(args Args, m collector.Metrics) []Segment {
 		segs = append(segs, Segment{
 			FG:       "#F4F4E6",
 			BG:       "#3A6A6A",
-			Text:     fmt.Sprintf(" %s %s ", iconTotalMem, m.TotalMem),
+			Text:     fmt.Sprintf("%s %s", iconTotalMem, m.TotalMem),
 			Priority: prioTotalMem,
+		})
+	}
+
+	// 8. System memory (used/total)
+	if m.SysMemOK && m.SysMemUsed != "" && m.SysMemTotal != "" {
+		segs = append(segs, Segment{
+			FG:       "#F4F4E6",
+			BG:       "#2A5A5A",
+			Text:     fmt.Sprintf("%s %s/%s", iconSysMem, m.SysMemUsed, m.SysMemTotal),
+			Priority: prioSysMem,
+		})
+	}
+
+	// 9. Root disk usage (used/total)
+	if m.DiskOK && m.DiskUsed != "" && m.DiskTotal != "" {
+		segs = append(segs, Segment{
+			FG:       "#F4F4E6",
+			BG:       "#1A4A4A",
+			Text:     fmt.Sprintf("%s %s/%s", iconDisk, m.DiskUsed, m.DiskTotal),
+			Priority: prioDisk,
 		})
 	}
 

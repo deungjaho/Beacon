@@ -3,9 +3,68 @@ package render
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"beacon/internal/collector"
 )
+
+func TestIconSysMemBytes(t *testing.T) {
+	// iconSysMem must be exactly U+F0210 — a supplementary-plane code point.
+	// Valid UTF-8 is 4 bytes: F3 B0 88 90.
+	// The old \uf0210 escape was parsed as U+F021 + ASCII '0'
+	// (two runes, 4 bytes: 0xEF 0x88 0xA1 0x30), which is wrong.
+	const wantRune = '\U000F0210'
+	wantBytes := []byte{0xF3, 0xB0, 0x88, 0x90}
+
+	// Rune-level: must be a single rune equal to U+F0210.
+	if utf8.RuneCountInString(iconSysMem) != 1 {
+		t.Fatalf("iconSysMem rune count: got %d want 1 (bytes=% x)", utf8.RuneCountInString(iconSysMem), []byte(iconSysMem))
+	}
+	r, _ := utf8.DecodeRuneInString(iconSysMem)
+	if r != wantRune {
+		t.Fatalf("iconSysMem rune: got U+%04X want U+%04X", r, wantRune)
+	}
+
+	// Byte-level: exact 4 bytes.
+	got := []byte(iconSysMem)
+	if len(got) != len(wantBytes) {
+		t.Fatalf("iconSysMem byte length: got %d want %d (bytes=% x)", len(got), len(wantBytes), got)
+	}
+	for i := range wantBytes {
+		if got[i] != wantBytes[i] {
+			t.Fatalf("iconSysMem byte %d: got 0x%02X want 0x%02X (bytes=% x)", i, got[i], wantBytes[i], got)
+		}
+	}
+
+	// Must NOT contain a trailing ASCII '0' (0x30) — the old bug.
+	if strings.Contains(iconSysMem, "0") {
+		t.Fatalf("iconSysMem must not contain ASCII '0': % x", got)
+	}
+}
+
+func TestIconDiskBytes(t *testing.T) {
+	// iconDisk is U+F0A0 (BMP) → 3 UTF-8 bytes: 0xEF 0x82 0xA0.
+	const wantRune = '\uF0A0'
+	wantBytes := []byte{0xEF, 0x82, 0xA0}
+
+	if utf8.RuneCountInString(iconDisk) != 1 {
+		t.Fatalf("iconDisk rune count: got %d want 1 (bytes=% x)", utf8.RuneCountInString(iconDisk), []byte(iconDisk))
+	}
+	r, _ := utf8.DecodeRuneInString(iconDisk)
+	if r != wantRune {
+		t.Fatalf("iconDisk rune: got U+%04X want U+%04X", r, wantRune)
+	}
+
+	got := []byte(iconDisk)
+	if len(got) != len(wantBytes) {
+		t.Fatalf("iconDisk byte length: got %d want %d (bytes=% x)", len(got), len(wantBytes), got)
+	}
+	for i := range wantBytes {
+		if got[i] != wantBytes[i] {
+			t.Fatalf("iconDisk byte %d: got 0x%02X want 0x%02X (bytes=% x)", i, got[i], wantBytes[i], got)
+		}
+	}
+}
 
 func TestRenderEmptyNoMetrics(t *testing.T) {
 	args := Args{Width: 160, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
@@ -40,7 +99,8 @@ func TestRenderNoAgentStatus(t *testing.T) {
 }
 
 func TestRenderStrictResourceOrder(t *testing.T) {
-	// Strict order: CPU, pressure, proc count, pane mem, window mem, session mem, total mem.
+	// Strict order: CPU, pressure, proc count, pane mem, window mem, session mem,
+	// total mem, system mem, disk.
 	m := collector.Metrics{
 		CPUPercent:    45,
 		CPUOK:         true,
@@ -52,8 +112,14 @@ func TestRenderStrictResourceOrder(t *testing.T) {
 		WindowMem:     map[string]string{"s:1": "340M"},
 		SessionMem:    map[string]string{"s": "1.2G"},
 		TotalMem:      "3.4G",
+		SysMemOK:      true,
+		SysMemUsed:    "15G",
+		SysMemTotal:   "16G",
+		DiskOK:        true,
+		DiskUsed:      "12G",
+		DiskTotal:     "228G",
 	}
-	args := Args{Width: 300, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
+	args := Args{Width: 400, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, m)
 
 	// Find byte positions of each icon and verify order.
@@ -68,6 +134,8 @@ func TestRenderStrictResourceOrder(t *testing.T) {
 		{"window-mem", '\U000F05B2'},
 		{"session-mem", '\uEBC8'},
 		{"total-mem", '\U000F035B'},
+		{"sys-mem", '\U000F0210'},
+		{"disk", '\uF0A0'},
 	}
 	prevPos := -1
 	for _, ic := range icons {
@@ -477,12 +545,69 @@ func TestRenderAllSegmentsTogether(t *testing.T) {
 		WindowMem:     map[string]string{"s:1": "340M"},
 		SessionMem:    map[string]string{"s": "1.2G"},
 		TotalMem:      "3.4G",
+		SysMemOK:      true,
+		SysMemUsed:    "15G",
+		SysMemTotal:   "16G",
+		DiskOK:        true,
+		DiskUsed:      "12G",
+		DiskTotal:     "228G",
 	}
-	args := Args{Width: 300, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
+	args := Args{Width: 400, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, m)
-	for _, want := range []string{"45%", "\uf4bc", "\uf080", "120M", "\U000F05B2", "340M", "\uebc8", "1.2G", "\U000F035B", "3.4G", "\uf46c", "230"} {
+	for _, want := range []string{"45%", "\uf4bc", "\uf080", "120M", "\U000F05B2", "340M", "\uebc8", "1.2G", "\U000F035B", "3.4G", "\uf46c", "230", "15G", "16G", "12G", "228G"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("wide render missing %q: %q", want, out)
 		}
+	}
+}
+
+func TestRenderSysMemSegment(t *testing.T) {
+	m := collector.Metrics{SysMemOK: true, SysMemUsed: "15G", SysMemTotal: "16G"}
+	args := Args{Width: 200, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
+	out := Render(args, m)
+	if !strings.Contains(out, "15G/16G") {
+		t.Fatalf("missing sys mem used/total: %q", out)
+	}
+}
+
+func TestRenderDiskSegment(t *testing.T) {
+	m := collector.Metrics{DiskOK: true, DiskUsed: "12G", DiskTotal: "228G"}
+	args := Args{Width: 200, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
+	out := Render(args, m)
+	if !strings.Contains(out, "12G/228G") {
+		t.Fatalf("missing disk used/total: %q", out)
+	}
+}
+
+func TestRenderNarrowDropsDiskFirst(t *testing.T) {
+	// At narrow width with all segments present, disk (lowest priority)
+	// should be dropped before CPU (highest priority).
+	m := collector.Metrics{
+		CPUPercent:    50,
+		CPUOK:         true,
+		MemPressure:   40,
+		MemPressureOK: true,
+		ProcCount:     230,
+		ProcCountOK:   true,
+		PaneMem:       map[string]string{"%1": "120M"},
+		WindowMem:     map[string]string{"s:1": "340M"},
+		SessionMem:    map[string]string{"s": "1.2G"},
+		TotalMem:      "3.4G",
+		SysMemOK:      true,
+		SysMemUsed:    "15G",
+		SysMemTotal:   "16G",
+		DiskOK:        true,
+		DiskUsed:      "12G",
+		DiskTotal:     "228G",
+	}
+	args := Args{Width: 85, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
+	out := Render(args, m)
+	// CPU (priority 0) should be present.
+	if !strings.Contains(out, "\uf4bc") {
+		t.Fatalf("narrow: CPU should be present: %q", out)
+	}
+	// Disk (priority 8, lowest) should be dropped.
+	if strings.Contains(out, "228G") {
+		t.Fatalf("narrow: disk should be dropped: %q", out)
 	}
 }

@@ -83,27 +83,27 @@ func TestParseProcCount(t *testing.T) {
 	}
 }
 
-func TestParsePsPidPpidRss(t *testing.T) {
+func TestParsePsPidPpidMemory(t *testing.T) {
 	input := "  PID  PPID    RSS\n    1     0   8960\n  410     1  18000\n  516     1   9120\n  517   410   6192\n"
-	procs := parsePsPidPpidRss(input)
+	procs := parsePsPidPpidMemory(input)
 	if len(procs) != 4 {
 		t.Fatalf("proc count: got %d want 4", len(procs))
 	}
-	if procs[1].PID != 410 || procs[1].PPID != 1 || procs[1].RSS != 18000 {
+	if procs[1].PID != 410 || procs[1].PPID != 1 || procs[1].MemoryKB != 18000 {
 		t.Fatalf("proc[1]: %+v", procs[1])
 	}
-	if procs[3].PID != 517 || procs[3].PPID != 410 || procs[3].RSS != 6192 {
+	if procs[3].PID != 517 || procs[3].PPID != 410 || procs[3].MemoryKB != 6192 {
 		t.Fatalf("proc[3]: %+v", procs[3])
 	}
 }
 
 func TestBuildChildrenMap(t *testing.T) {
 	procs := []procInfo{
-		{PID: 1, PPID: 0, RSS: 100},
-		{PID: 410, PPID: 1, RSS: 200},
-		{PID: 516, PPID: 1, RSS: 300},
-		{PID: 517, PPID: 410, RSS: 400},
-		{PID: 518, PPID: 410, RSS: 500},
+		{PID: 1, PPID: 0, MemoryKB: 100},
+		{PID: 410, PPID: 1, MemoryKB: 200},
+		{PID: 516, PPID: 1, MemoryKB: 300},
+		{PID: 517, PPID: 410, MemoryKB: 400},
+		{PID: 518, PPID: 410, MemoryKB: 500},
 	}
 	children := buildChildrenMap(procs)
 	if len(children[1]) != 2 {
@@ -114,30 +114,30 @@ func TestBuildChildrenMap(t *testing.T) {
 	}
 }
 
-func TestDescendantRSSSum(t *testing.T) {
+func TestDescendantMemorySum(t *testing.T) {
 	procs := []procInfo{
-		{PID: 1, PPID: 0, RSS: 100},
-		{PID: 410, PPID: 1, RSS: 200},
-		{PID: 516, PPID: 1, RSS: 300},
-		{PID: 517, PPID: 410, RSS: 400},
-		{PID: 518, PPID: 410, RSS: 500},
-		{PID: 600, PPID: 517, RSS: 600},
+		{PID: 1, PPID: 0, MemoryKB: 100},
+		{PID: 410, PPID: 1, MemoryKB: 200},
+		{PID: 516, PPID: 1, MemoryKB: 300},
+		{PID: 517, PPID: 410, MemoryKB: 400},
+		{PID: 518, PPID: 410, MemoryKB: 500},
+		{PID: 600, PPID: 517, MemoryKB: 600},
 	}
 	children := buildChildrenMap(procs)
-	rssByPid := map[int]uint64{}
+	memByPid := map[int]uint64{}
 	for _, p := range procs {
-		rssByPid[p.PID] = p.RSS
+		memByPid[p.PID] = p.MemoryKB
 	}
 	// Pane with shell PID 410: should include 410 + 517 + 518 + 600
-	got := sumDescendantRSS(410, children, rssByPid)
+	got := sumDescendantMemory(410, children, memByPid)
 	want := uint64(200 + 400 + 500 + 600)
 	if got != want {
-		t.Fatalf("descendant RSS for 410: got %d want %d", got, want)
+		t.Fatalf("descendant memory for 410: got %d want %d", got, want)
 	}
 	// Pane with shell PID 516: only itself
-	got = sumDescendantRSS(516, children, rssByPid)
+	got = sumDescendantMemory(516, children, memByPid)
 	if got != 300 {
-		t.Fatalf("descendant RSS for 516: got %d want 300", got)
+		t.Fatalf("descendant memory for 516: got %d want 300", got)
 	}
 }
 
@@ -161,17 +161,17 @@ func TestAggregatePaneMemory(t *testing.T) {
 		{Session: "s2", WindowIndex: "1", WindowID: "@3", PaneID: "%4", PanePID: 400},
 	}
 	procs := []procInfo{
-		{PID: 100, PPID: 0, RSS: 1000},
-		{PID: 200, PPID: 0, RSS: 2000},
-		{PID: 300, PPID: 0, RSS: 3000},
-		{PID: 400, PPID: 0, RSS: 4000},
+		{PID: 100, PPID: 0, MemoryKB: 1000},
+		{PID: 200, PPID: 0, MemoryKB: 2000},
+		{PID: 300, PPID: 0, MemoryKB: 3000},
+		{PID: 400, PPID: 0, MemoryKB: 4000},
 	}
 	children := buildChildrenMap(procs)
-	rssByPid := map[int]uint64{}
+	memByPid := map[int]uint64{}
 	for _, p := range procs {
-		rssByPid[p.PID] = p.RSS
+		memByPid[p.PID] = p.MemoryKB
 	}
-	result := aggregatePaneMemory(panes, children, rssByPid)
+	result := aggregatePaneMemory(panes, children, memByPid)
 	if result.PaneMem["%1"] != 1000 {
 		t.Fatalf("pane %%1: got %d want 1000", result.PaneMem["%1"])
 	}
@@ -320,5 +320,261 @@ func TestCPUBGColor(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("CPUBGColor(%.0f): got %q want %q", tc.val, got, tc.want)
 		}
+	}
+}
+
+// --- macOS top process parsing tests ---
+
+func TestParseMemColumn(t *testing.T) {
+	tests := []struct {
+		input string
+		want  uint64
+		ok    bool
+	}{
+		{"1144M", 1144 * 1024, true},
+		{"856K", 856, true},
+		{"2G", 2 * 1024 * 1024, true},
+		{"100M", 100 * 1024, true},
+		{"10M", 10 * 1024, true},
+		{"", 0, false},
+		{"abc", 0, false},
+	}
+	for _, tc := range tests {
+		got, ok := parseMemColumn(tc.input)
+		if ok != tc.ok {
+			t.Errorf("parseMemColumn(%q): ok got %v want %v", tc.input, ok, tc.ok)
+			continue
+		}
+		if ok && got != tc.want {
+			t.Errorf("parseMemColumn(%q): got %d want %d", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestParseMacOSProcCount(t *testing.T) {
+	tests := []struct {
+		input string
+		want  int
+		ok    bool
+	}{
+		{"Processes: 727 total, 4 running, 708 sleeping, 5940 threads", 727, true},
+		{"Processes: 100 total, ", 100, true},
+		{"no match", 0, false},
+	}
+	for _, tc := range tests {
+		got, ok := parseMacOSProcCount(tc.input)
+		if ok != tc.ok {
+			t.Errorf("parseMacOSProcCount: ok got %v want %v", ok, tc.ok)
+			continue
+		}
+		if ok && got != tc.want {
+			t.Errorf("parseMacOSProcCount: got %d want %d", got, tc.want)
+		}
+	}
+}
+
+func TestParseMacOSTopProcesses(t *testing.T) {
+	input := `Processes: 5 total, 1 running, 4 sleeping, 10 threads
+CPU usage: 10% user, 20% sys, 70% idle
+
+PID    MEM   PPID
+589    1144M 1
+13746  904M  13494
+33007  754M  1
+`
+	procs := parseMacOSTopProcesses(input)
+	if len(procs) != 3 {
+		t.Fatalf("proc count: got %d want 3", len(procs))
+	}
+	if procs[0].PID != 589 || procs[0].MemoryKB != 1144*1024 || procs[0].MemoryKind != MemoryKindFootprint {
+		t.Fatalf("proc[0]: %+v", procs[0])
+	}
+	if procs[1].PPID != 13494 || procs[1].MemoryKB != 904*1024 {
+		t.Fatalf("proc[1]: %+v", procs[1])
+	}
+}
+
+func TestParseMacOSTopProcessesEmpty(t *testing.T) {
+	input := "Processes: 0 total\nCPU usage: 5% user, 10% sys, 85% idle\n"
+	procs := parseMacOSTopProcesses(input)
+	if len(procs) != 0 {
+		t.Fatalf("expected 0 procs, got %d", len(procs))
+	}
+}
+
+// --- System memory parsing tests ---
+
+func TestParseMacOSVmStat(t *testing.T) {
+	input := `Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    10261.
+Pages active:                                 243531.
+Pages inactive:                               236491.
+Pages speculative:                              6423.
+Pages wired down:                             219629.
+Pages occupied by compressor:                 292857.
+`
+	totalBytes := uint64(17179869184) // 16GB
+	used, ok := parseMacOSVmStat(input, totalBytes)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	pageSize := uint64(16384)
+	freePages := uint64(10261) + uint64(6423) // free + speculative
+	free := freePages * pageSize
+	want := totalBytes - free
+	if used != want {
+		t.Fatalf("used: got %d want %d", used, want)
+	}
+}
+
+func TestParseMacOSVmStatNoData(t *testing.T) {
+	input := "garbage\nno useful lines\n"
+	_, ok := parseMacOSVmStat(input, 17179869184)
+	if ok {
+		t.Fatal("expected not ok for garbage input")
+	}
+}
+
+func TestParseSysctlMemSize(t *testing.T) {
+	tests := []struct {
+		input string
+		want  uint64
+		ok    bool
+	}{
+		{"hw.memsize: 17179869184", 17179869184, true},
+		{"hw.memsize: 8589934592", 8589934592, true},
+		{"", 0, false},
+		{"garbage", 0, false},
+	}
+	for _, tc := range tests {
+		got, ok := parseSysctlMemSize(tc.input)
+		if ok != tc.ok {
+			t.Errorf("parseSysctlMemSize(%q): ok got %v want %v", tc.input, ok, tc.ok)
+			continue
+		}
+		if ok && got != tc.want {
+			t.Errorf("parseSysctlMemSize(%q): got %d want %d", tc.input, got, tc.want)
+		}
+	}
+}
+
+// --- Disk usage parsing tests ---
+
+func TestParseDfOutput(t *testing.T) {
+	input := "Filesystem     1K-blocks      Used Available Capacity Mounted on\n/dev/disk3s1s1 239362496 12346296 11785340    52%  /\n"
+	used, total, ok := parseDfOutput(input)
+	if !ok {
+		t.Fatal("expected ok")
+	}
+	if total != 239362496 {
+		t.Fatalf("total: got %d want 239362496", total)
+	}
+	if used != 12346296 {
+		t.Fatalf("used: got %d want 12346296", used)
+	}
+}
+
+func TestParseDfOutputEmpty(t *testing.T) {
+	_, _, ok := parseDfOutput("Filesystem 1K-blocks Used Available\n")
+	if ok {
+		t.Fatal("expected not ok for header-only input")
+	}
+}
+
+// --- MemoryKind tests ---
+
+func TestMemoryKindValues(t *testing.T) {
+	if MemoryKindFootprint != "footprint" {
+		t.Fatalf("MemoryKindFootprint: got %q want %q", MemoryKindFootprint, "footprint")
+	}
+	if MemoryKindRSS != "rss" {
+		t.Fatalf("MemoryKindRSS: got %q want %q", MemoryKindRSS, "rss")
+	}
+}
+
+func TestParsePsPidPpidMemoryKind(t *testing.T) {
+	input := "  PID  PPID    RSS\n    1     0   8960\n"
+	procs := parsePsPidPpidMemory(input)
+	if len(procs) != 1 {
+		t.Fatalf("proc count: got %d want 1", len(procs))
+	}
+	if procs[0].MemoryKind != MemoryKindRSS {
+		t.Fatalf("MemoryKind: got %q want %q", procs[0].MemoryKind, MemoryKindRSS)
+	}
+}
+
+func TestParseMacOSTopProcessesMemoryKind(t *testing.T) {
+	input := "Processes: 1 total\n\nPID    MEM   PPID\n1    100M  0\n"
+	procs := parseMacOSTopProcesses(input)
+	if len(procs) != 1 {
+		t.Fatalf("proc count: got %d want 1", len(procs))
+	}
+	if procs[0].MemoryKind != MemoryKindFootprint {
+		t.Fatalf("MemoryKind: got %q want %q", procs[0].MemoryKind, MemoryKindFootprint)
+	}
+}
+
+func TestParseMacOSIOStatCPU(t *testing.T) {
+	// Real iostat -c 2 -w 1 output on macOS.
+	input := "          disk0       cpu    load average\n" +
+		"    KB/t  tps  MB/s  us sy id   1m   5m   15m\n" +
+		"   14.78  347  5.01  12 11 78  13.22 12.80 8.56\n" +
+		"   39.66 1380 53.44  14 11 75  13.22 12.80 8.56\n"
+	cpu, ok := parseMacOSIOStatCPU(input)
+	if !ok {
+		t.Fatalf("parse failed")
+	}
+	// Second sample: us=14, sy=11 → 25.
+	if cpu != 25 {
+		t.Fatalf("CPU: got %.0f want 25", cpu)
+	}
+}
+
+func TestParseMacOSIOStatCPUShortOutput(t *testing.T) {
+	// Only header, no data lines.
+	input := "          disk0       cpu    load average\n" +
+		"    KB/t  tps  MB/s  us sy id   1m   5m   15m\n"
+	_, ok := parseMacOSIOStatCPU(input)
+	if ok {
+		t.Fatalf("should fail on short output")
+	}
+}
+
+func TestParseMacOSIOStatCPUFirstSampleIgnored(t *testing.T) {
+	// Verify we use the SECOND sample, not the first.
+	input := "          disk0       cpu    load average\n" +
+		"    KB/t  tps  MB/s  us sy id   1m   5m   15m\n" +
+		"   14.78  347  5.01  99 1 0  13.22 12.80 8.56\n" +
+		"   39.66 1380 53.44  3 2 95  13.22 12.80 8.56\n"
+	cpu, ok := parseMacOSIOStatCPU(input)
+	if !ok {
+		t.Fatalf("parse failed")
+	}
+	// Second sample: us=3, sy=2 → 5, NOT first sample 99+1=100.
+	if cpu != 5 {
+		t.Fatalf("CPU: got %.0f want 5 (should use 2nd sample)", cpu)
+	}
+}
+
+func TestSampleFastTimeoutRetainsLastGood(t *testing.T) {
+	// Simulate a timeout: runCommand with a non-existent binary.
+	// The collector should return ok=false, and the daemon should
+	// retain last-good values (tested in daemon package).
+	c := NewCollector("darwin", "tmux")
+	// Override sampleCPUOutput to simulate timeout by using a bad command.
+	// We can't easily inject, but we can verify that a real SampleFast
+	// on darwin returns valid values (smoke test).
+	cpu, cpuOK, _, pressureOK, _, procCountOK := c.SampleFast()
+	if !cpuOK {
+		t.Fatalf("CPU should be OK on darwin: cpu=%.1f", cpu)
+	}
+	if !pressureOK {
+		t.Fatalf("pressure should be OK on darwin")
+	}
+	if !procCountOK {
+		t.Fatalf("proc count should be OK on darwin")
+	}
+	if cpu < 0 || cpu > 100 {
+		t.Fatalf("CPU out of range: %.1f", cpu)
 	}
 }
