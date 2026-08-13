@@ -184,7 +184,7 @@ func (d *Daemon) acceptLoop(listener net.Listener) {
 
 // SocketRequest is the JSON protocol for the Unix socket.
 type SocketRequest struct {
-	Action  string `json:"action"` // "report", "set-last", "cleanup", "ping"
+	Action  string `json:"action"` // "report", "set-last", "cleanup", "acknowledge", "ping"
 	Pane    string `json:"pane,omitempty"`
 	Status  string `json:"status,omitempty"`
 	Summary string `json:"summary,omitempty"`
@@ -263,6 +263,14 @@ func (d *Daemon) handleRequest(req SocketRequest) socketResponse {
 		livePanes := d.livePanes()
 		d.store.Cleanup(time.Now().Unix(), state.CompletedTTLSeconds, livePanes)
 		return socketResponse{OK: true}
+	case "acknowledge":
+		if req.Pane == "" {
+			return socketResponse{OK: false, Error: "pane required"}
+		}
+		if err := d.store.Acknowledge(req.Pane); err != nil {
+			return socketResponse{OK: false, Error: err.Error()}
+		}
+		return socketResponse{OK: true}
 	default:
 		return socketResponse{OK: false, Error: "unknown action: " + req.Action}
 	}
@@ -330,6 +338,30 @@ func SendReport(socketPath string, req SocketRequest) error {
 	enc := json.NewEncoder(conn)
 	dec := json.NewDecoder(conn)
 	if err := enc.Encode(req); err != nil {
+		return err
+	}
+	var resp socketResponse
+	if err := dec.Decode(&resp); err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("daemon: %s", resp.Error)
+	}
+	return nil
+}
+
+// SendAcknowledge sends an acknowledge request to the daemon via socket.
+// Falls back silently if the daemon is not running (caller should do file-based ack).
+func SendAcknowledge(socketPath, pane string) error {
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+	enc := json.NewEncoder(conn)
+	dec := json.NewDecoder(conn)
+	if err := enc.Encode(SocketRequest{Action: "acknowledge", Pane: pane}); err != nil {
 		return err
 	}
 	var resp socketResponse

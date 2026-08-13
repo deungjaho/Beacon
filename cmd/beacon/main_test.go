@@ -82,6 +82,10 @@ case "${1:-}" in
     esac
     ;;
   list-panes) for i in $(seq 1 100); do printf '%%%s\n' "$i"; done ;;
+  list-windows) printf '@1\n@2\n' ;;
+  list-sessions) printf 'test-session\n' ;;
+  list-clients) printf '/dev/ttys000|%%1\n' ;;
+  set-option) : ;;
   switch-client|select-pane) printf '%s\n' "$*" >>"${BEACON_TEST_TMUX_LOG:-/dev/null}" ;;
 esac
 `
@@ -236,6 +240,8 @@ func TestCLIConcurrentReportsNoLoss(t *testing.T) {
 }
 
 func TestCLITmuxCompletedRendering(t *testing.T) {
+	// status-right must NOT show agent status (completed/summary).
+	// It should only show resource metrics. Agent notifications are bells.
 	te := newTestEnv(t)
 	te.run("reset")
 	te.runWithEnv(map[string]string{
@@ -246,8 +252,8 @@ func TestCLITmuxCompletedRendering(t *testing.T) {
 		"BEACON_NOW":         "100",
 		"BEACON_SHOW_SYSTEM": "0",
 	}, "status-tmux", "160", "black", "test-session", "1", "%1", "@1")
-	assertContains(t, out, "all tests passed", "tmux completed rendering")
-	assertContains(t, out, "#7F9F7F", "tmux completed color")
+	// Must NOT contain agent summary or agent colors.
+	assertNotContains(t, out, "all tests passed", "no agent summary in status-right")
 }
 
 func TestCLITmuxRendererIsReadOnly(t *testing.T) {
@@ -286,8 +292,8 @@ func TestCLINoRecordShowsNoAgentStatus(t *testing.T) {
 }
 
 func TestCLIExplicitStateShowsAgentStatus(t *testing.T) {
-	// When a pane has an explicit Beacon record from hooks/report, the
-	// agent status must appear in status-tmux.
+	// status-right must NOT show agent status even with explicit record.
+	// Agent notifications are bells, not status-right segments.
 	te := newTestEnv(t)
 	te.run("reset")
 	te.runWithEnv(map[string]string{
@@ -298,7 +304,8 @@ func TestCLIExplicitStateShowsAgentStatus(t *testing.T) {
 		"BEACON_NOW":         "100",
 		"BEACON_SHOW_SYSTEM": "0",
 	}, "status-tmux", "160", "black", "test-session", "1", "%9", "@1")
-	assertContains(t, out, "needs input", "explicit agent state")
+	assertNotContains(t, out, "needs input", "no agent text in status-right")
+	assertNotContains(t, out, "waiting", "no agent status in status-right")
 }
 
 func TestCLIJumpSelectsLivePane(t *testing.T) {
@@ -444,11 +451,11 @@ func TestCLIDaemonDownStatusTmuxReadsCache(t *testing.T) {
 		"TMUX_PANE":  "%1",
 		"BEACON_NOW": "100",
 	}, "report", "working", "busy")
-	// Daemon is NOT running. status-tmux should still render from cache.
+	// Daemon is NOT running. status-tmux should render resource metrics from cache.
 	out, _ := te.runWithEnv(map[string]string{
 		"BEACON_SHOW_SYSTEM": "0",
 	}, "status-tmux", "200", "black", "test-session", "1", "%1", "@1")
-	assertContains(t, out, "busy", "agent state from file")
+	assertNotContains(t, out, "busy", "no agent text in status-right")
 	assertContains(t, out, "100M", "pane mem from cache")
 	assertContains(t, out, "45%", "CPU from cache")
 }
@@ -480,10 +487,10 @@ func TestCLIStatusTmuxNarrowWidthEmpty(t *testing.T) {
 func TestCLIStatusTmuxDefaultBG(t *testing.T) {
 	te := newTestEnv(t)
 	te.run("reset")
-	te.runWithEnv(map[string]string{
-		"TMUX_PANE":  "%1",
-		"BEACON_NOW": "100",
-	}, "report", "working", "x")
+	// Write a fake snapshot so status-tmux has resource metrics to render.
+	snapshot := `{"sampled_at":1000,"cpu_percent":45,"cpu_ok":true,"mem_pressure":40,"mem_pressure_ok":true}`
+	os.MkdirAll(te.cacheDir, 0o700)
+	os.WriteFile(filepath.Join(te.cacheDir, "snapshot.json"), []byte(snapshot), 0o600)
 	out, _ := te.run("status-tmux", "160", "default", "test-session", "1", "%1", "@1")
 	assertContains(t, out, "bg=black", "default bg should become black")
 }
@@ -584,3 +591,215 @@ func TestCLIHookNotification(t *testing.T) {
 
 // Ensure time is imported for potential future use.
 var _ = time.Now
+
+func TestCLIAcknowledgeClearsBell(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	// Report waiting → should be unacknowledged.
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%1",
+		"BEACON_NOW": "100",
+	}, "report", "waiting", "needs input")
+	st := te.loadState()
+	if rec := st.Panes["%1"]; rec.Acknowledged {
+		t.Fatal("waiting should be unacknowledged initially")
+	}
+	// Acknowledge.
+	te.run("acknowledge", "%1")
+	st = te.loadState()
+	if rec := st.Panes["%1"]; !rec.Acknowledged {
+		t.Fatal("acknowledge should set Acknowledged=true")
+	}
+}
+
+func TestCLIWorkingIsAutoAcknowledged(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%1",
+		"BEACON_NOW": "100",
+	}, "report", "working", "busy")
+	st := te.loadState()
+	if rec := st.Panes["%1"]; !rec.Acknowledged {
+		t.Fatal("working should be auto-acknowledged (no bell)")
+	}
+}
+
+func TestCLIPendingNotificationsOldestFirst(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	// Report two panes with different timestamps.
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%2",
+		"BEACON_NOW": "200",
+	}, "report", "waiting", "second")
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%1",
+		"BEACON_NOW": "100",
+	}, "report", "completed", "first")
+	st := te.loadState()
+	store, _ := state.NewStore(te.stateDir)
+	pending := store.PendingNotifications()
+	if len(pending) != 2 {
+		t.Fatalf("expected 2 pending, got %d", len(pending))
+	}
+	if pending[0].Pane != "%1" {
+		t.Fatalf("oldest should be %%1 (time 100), got %s (time %d)", pending[0].Pane, pending[0].Time)
+	}
+	_ = st
+}
+
+func TestCLIJumpNoOpWithoutPending(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	// No pending notifications → jump must be no-op (no fallback to LastCompleted).
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%1",
+		"BEACON_NOW": "100",
+	}, "report", "completed", "done")
+	// Even with LastCompleted set, jump should not select any pane
+	// because the completed notification was auto-acknowledged by... wait,
+	// completed IS a notification status. Let's acknowledge it first.
+	te.run("acknowledge", "%1")
+	// Now no pending. Jump should be no-op.
+	te.runWithEnv(map[string]string{
+		"BEACON_TEST_TMUX_LOG": te.tmuxLog,
+	}, "jump")
+	logData, _ := os.ReadFile(te.tmuxLog)
+	logStr := string(logData)
+	// Should NOT contain switch-client or select-pane (no-op).
+	if strings.Contains(logStr, "switch-client") {
+		t.Fatal("jump should be no-op without pending notifications")
+	}
+	if strings.Contains(logStr, "select-pane") {
+		t.Fatal("jump should be no-op without pending notifications")
+	}
+}
+
+func TestCLIAcknowledgeOnlyClearsTargetPane(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%1",
+		"BEACON_NOW": "100",
+	}, "report", "waiting", "first")
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%2",
+		"BEACON_NOW": "200",
+	}, "report", "blocked", "second")
+	// Acknowledge only %1.
+	te.run("acknowledge", "%1")
+	st := te.loadState()
+	if rec := st.Panes["%1"]; !rec.Acknowledged {
+		t.Fatal("%1 should be acknowledged")
+	}
+	if rec := st.Panes["%2"]; rec.Acknowledged {
+		t.Fatal("%2 should still be unacknowledged")
+	}
+}
+
+func TestCLIAcknowledgeVisibleClearsVisiblePending(t *testing.T) {
+	// acknowledge-visible should clear bells for panes visible to attached clients.
+	// Fake tmux returns /dev/ttys000 → %1 as the only visible pane.
+	te := newTestEnv(t)
+	te.run("reset")
+	// Report on %1 (visible) and %2 (not visible).
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%1",
+		"BEACON_NOW": "100",
+	}, "report", "waiting", "visible")
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%2",
+		"BEACON_NOW": "200",
+	}, "report", "blocked", "hidden")
+	st := te.loadState()
+	if rec := st.Panes["%1"]; rec.Acknowledged {
+		t.Fatal("%1 should be unacknowledged before acknowledge-visible")
+	}
+	if rec := st.Panes["%2"]; rec.Acknowledged {
+		t.Fatal("%2 should be unacknowledged before acknowledge-visible")
+	}
+	// Run acknowledge-visible — should clear %1 (visible) but not %2.
+	te.run("acknowledge-visible")
+	st = te.loadState()
+	if rec := st.Panes["%1"]; !rec.Acknowledged {
+		t.Fatal("%1 (visible) should be acknowledged")
+	}
+	if rec := st.Panes["%2"]; rec.Acknowledged {
+		t.Fatal("%2 (not visible) should still be unacknowledged")
+	}
+}
+
+func TestCLIAcknowledgeVisibleNoOpWithoutPending(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	// No pending notifications — acknowledge-visible should be no-op.
+	te.run("acknowledge-visible")
+	st := te.loadState()
+	if len(st.Panes) != 0 {
+		t.Fatalf("no panes should exist, got %d", len(st.Panes))
+	}
+}
+
+func TestCLIAcknowledgeVisibleParsesPipeSeparator(t *testing.T) {
+	// Regression: tmux format #{client_tty}\t#{pane_id} produces literal
+	// backslash-t, not a real tab. The code must use | as separator.
+	// This test uses a fake tmux that outputs the | format and verifies
+	// that the visible pane is correctly parsed and acknowledged.
+	te := newTestEnv(t)
+	te.run("reset")
+	// Report on %1 (will be the visible pane from fake list-clients).
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%1",
+		"BEACON_NOW": "100",
+	}, "report", "waiting", "visible pane")
+	// Run acknowledge-visible.
+	te.run("acknowledge-visible")
+	st := te.loadState()
+	if rec := st.Panes["%1"]; !rec.Acknowledged {
+		t.Fatal("fake tmux outputs /dev/ttys000|%1 — %1 should be parsed as visible and acknowledged")
+	}
+}
+
+func TestCLIAcknowledgeVisibleRejectsTabSeparator(t *testing.T) {
+	// If the fake tmux outputs literal \t (backslash-t), the parser must
+	// NOT misparse it. This confirms the code doesn't fall back to tab.
+	te := newTestEnv(t)
+	// Override the fake tmux to output literal \t instead of |.
+	script := `#!/usr/bin/env bash
+case "${1:-}" in
+  display-message)
+    target=""; format=""
+    while (($#)); do
+      case "$1" in
+        -t) target="$2"; shift 2 ;;
+        '#{'*) format="$1"; shift ;;
+        *) shift ;;
+      esac
+    done
+    case "$format" in
+      '#{session_name}') printf 'test-session\n' ;;
+      '#{window_id}') printf '@1\n' ;;
+      '#{pane_id}') printf '%%s\n' "$target" ;;
+    esac
+    ;;
+  list-panes) for i in $(seq 1 100); do printf '%%%s\n' "$i"; done ;;
+  list-windows) printf '@1\n@2\n' ;;
+  list-sessions) printf 'test-session\n' ;;
+  list-clients) printf '/dev/ttys000\\t%%1\n' ;;
+  set-option) : ;;
+  switch-client|select-pane) printf '%s\n' "$*" >>"${BEACON_TEST_TMUX_LOG:-/dev/null}" ;;
+esac
+`
+	os.WriteFile(te.tmuxScript, []byte(script), 0o755)
+	te.run("reset")
+	te.runWithEnv(map[string]string{
+		"TMUX_PANE":  "%1",
+		"BEACON_NOW": "100",
+	}, "report", "waiting", "should not be acked")
+	te.run("acknowledge-visible")
+	st := te.loadState()
+	if rec := st.Panes["%1"]; rec.Acknowledged {
+		t.Fatal("literal \\t must not be parsed as separator — %1 should remain unacknowledged")
+	}
+}

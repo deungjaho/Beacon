@@ -82,8 +82,11 @@ commands:
   report <working|waiting|blocked|completed> [summary] [cwd]
   notify <title> <message>
   status                  print JSON state
-  status-tmux [args...]   render tmux status-right
-  jump                    jump to the last completed pane
+  status-tmux [args...]   render tmux status-right (resource metrics only)
+  jump                    jump to oldest unacknowledged notification pane
+  acknowledge <pane_id>   clear notification bell for a pane
+  acknowledge-visible     clear bells for all panes visible to attached clients
+  sync-bells             sync tmux user options from Beacon state
   cleanup                 remove expired or dead-pane records
   reset                   clear local Beacon state
   hook <prompt|stop|notification|permission>
@@ -110,6 +113,12 @@ func main() {
 		os.Exit(cmdStatusTmux(args))
 	case "jump":
 		os.Exit(cmdJump(args))
+	case "acknowledge":
+		os.Exit(cmdAcknowledge(args))
+	case "acknowledge-visible":
+		os.Exit(cmdAcknowledgeVisible(args))
+	case "sync-bells":
+		os.Exit(cmdSyncBells(args))
 	case "cleanup":
 		os.Exit(cmdCleanup(args))
 	case "reset":
@@ -181,6 +190,10 @@ func cmdReport(args []string) int {
 			}
 			// Best-effort cleanup.
 			_ = daemon.SendReport(sock, daemon.SocketRequest{Action: "cleanup"})
+			// Sync tmux bell options (event-driven, not per-render).
+			if store, err := state.NewStore(defaultStateDir()); err == nil {
+				syncBells(store)
+			}
 			return 0
 		}
 	}
@@ -213,6 +226,7 @@ func cmdReport(args []string) int {
 	// Best-effort cleanup.
 	livePanes := listLivePanes()
 	store.Cleanup(now, state.CompletedTTLSeconds, livePanes)
+	syncBells(store)
 	return 0
 }
 
@@ -310,13 +324,6 @@ func cmdStatusTmux(args []string) int {
 		rargs.WindowID = strings.TrimSpace(args[5])
 	}
 
-	// Read agent state (fast file read).
-	store, err := state.NewStore(defaultStateDir())
-	if err != nil {
-		return 0
-	}
-	st, _ := store.Load()
-
 	// Read metrics snapshot (fast file read, no subprocess).
 	var m collector.Metrics
 	snapshotPath := filepath.Join(defaultCacheDir(), "snapshot.json")
@@ -324,7 +331,7 @@ func cmdStatusTmux(args []string) int {
 		_ = json.Unmarshal(data, &m)
 	}
 
-	output := render.Render(rargs, st, m)
+	output := render.Render(rargs, m)
 	if output != "" {
 		fmt.Print(output)
 	}
@@ -336,22 +343,247 @@ func cmdJump(args []string) int {
 	if err != nil {
 		return 0
 	}
-	st, err := store.Load()
-	if err != nil || st.LastCompleted == nil {
+	// Jump to the oldest unacknowledged notification pane.
+	// If no pending notifications, this is a no-op (no fallback to LastCompleted).
+	pending := store.PendingNotifications()
+	for _, target := range pending {
+		// Verify pane is still live.
+		if _, err := exec.Command(tmuxBin(), "display-message", "-p", "-t", target.Pane, "#{pane_id}").Output(); err != nil {
+			// Pane is gone; acknowledge it (clears stale bell) and try next.
+			_ = ackPane(store, target.Pane)
+			continue
+		}
+		_ = exec.Command(tmuxBin(), "switch-client", "-t", target.Session).Run()
+		_ = exec.Command(tmuxBin(), "select-pane", "-t", target.Pane).Run()
+		// Acknowledge the bell on arrival.
+		_ = ackPane(store, target.Pane)
 		return 0
 	}
-	pane := st.LastCompleted.Pane
-	session := st.LastCompleted.Session
-	if pane == "" || session == "" {
-		return 0
-	}
-	// Verify pane is still live.
-	if _, err := exec.Command(tmuxBin(), "display-message", "-p", "-t", pane, "#{pane_id}").Output(); err != nil {
-		return 0
-	}
-	_ = exec.Command(tmuxBin(), "switch-client", "-t", session).Run()
-	_ = exec.Command(tmuxBin(), "select-pane", "-t", pane).Run()
+	// No pending notifications or all pending panes are gone.
 	return 0
+}
+
+func cmdAcknowledge(args []string) int {
+	if len(args) < 1 {
+		fmt.Fprintf(os.Stderr, "beacon: acknowledge requires a pane ID\n")
+		return 2
+	}
+	pane := args[0]
+	store, err := state.NewStore(defaultStateDir())
+	if err != nil {
+		return 1
+	}
+	if err := ackPane(store, pane); err != nil {
+		fmt.Fprintf(os.Stderr, "beacon: acknowledge: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// cmdAcknowledgeVisible acknowledges all pending notification panes that are
+// currently visible to any attached tmux client. This is the unified hook
+// handler: after-select-pane, after-select-window, and client-session-changed
+// all call this. It runs one tmux list-clients, deduplicates visible pane IDs,
+// acknowledges only those that have pending (unacknowledged) notifications,
+// then syncs bells once. Detached sessions keep their bells.
+func cmdAcknowledgeVisible(args []string) int {
+	store, err := state.NewStore(defaultStateDir())
+	if err != nil {
+		return 1
+	}
+
+	// Get all pending notification panes (unacknowledged waiting/blocked/completed).
+	pending := store.PendingNotifications()
+	if len(pending) == 0 {
+		return 0
+	}
+	pendingSet := make(map[string]bool, len(pending))
+	for _, p := range pending {
+		pendingSet[p.Pane] = true
+	}
+
+	// One tmux call: list all attached clients and their visible pane.
+	// Use | as separator — tmux format \t produces literal backslash-t, not a real tab.
+	tb := tmuxBin()
+	out, err := exec.Command(tb, "list-clients", "-F", "#{client_tty}|#{pane_id}").Output()
+	if err != nil {
+		return 0 // non-fatal: tmux not available
+	}
+
+	// Collect unique visible pane IDs that have pending notifications.
+	visiblePending := make(map[string]bool)
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		fields := strings.SplitN(line, "|", 2)
+		if len(fields) < 2 {
+			continue
+		}
+		paneID := strings.TrimSpace(fields[1])
+		if pendingSet[paneID] {
+			visiblePending[paneID] = true
+		}
+	}
+
+	if len(visiblePending) == 0 {
+		return 0
+	}
+
+	// Acknowledge each visible pending pane.
+	for paneID := range visiblePending {
+		_ = store.Acknowledge(paneID)
+	}
+
+	// Sync bells once after all acknowledgements.
+	syncBells(store)
+	return 0
+}
+
+// ackPane tries the daemon socket first (fast path), falls back to direct file write.
+// After acknowledging, syncs tmux bell options.
+func ackPane(store *state.Store, pane string) error {
+	socketPath := filepath.Join(defaultStateDir(), "beacon.sock")
+	if err := daemon.SendAcknowledge(socketPath, pane); err == nil {
+		syncBells(store)
+		return nil
+	}
+	if err := store.Acknowledge(pane); err != nil {
+		return err
+	}
+	syncBells(store)
+	return nil
+}
+
+// cmdSyncBells synchronizes tmux user options @beacon_pane_bell (pane scope),
+// @beacon_window_bell (window scope), and @beacon_session_bell (session scope)
+// from the current Beacon state. Called after report/acknowledge/cleanup/reset.
+// Uses three distinct option names to avoid tmux scope inheritance confusion.
+func cmdSyncBells(args []string) int {
+	store, err := state.NewStore(defaultStateDir())
+	if err != nil {
+		return 1
+	}
+	syncBells(store)
+	return 0
+}
+
+// syncBells reads state and sets/unsets tmux user options at the correct scope.
+// Pane options are set per-pane with -t pane. Window options with -t window.
+// Session options with -t session. This is event-driven (called only on state
+// change), not per-render.
+func syncBells(store *state.Store) {
+	tb := tmuxBin()
+	st, err := store.Load()
+	if err != nil {
+		return
+	}
+
+	// Build sets of panes/windows/sessions with unacknowledged notifications.
+	paneBell := map[string]bool{}    // pane_id -> has bell
+	windowBell := map[string]bool{}  // window_id -> has bell
+	sessionBell := map[string]bool{} // session_name -> has bell
+
+	for paneID, rec := range st.Panes {
+		if state.IsNotificationStatus(rec.Status) && !rec.Acknowledged {
+			paneBell[paneID] = true
+			if rec.Window != "" {
+				windowBell[rec.Window] = true
+			}
+			if rec.Session != "" {
+				sessionBell[rec.Session] = true
+			}
+		}
+	}
+
+	// Sync pane-scope options: set bell on notified panes, unset on others.
+	// We iterate all live panes to clear stale bells on panes that no longer
+	// have a notification.
+	livePanes := listLivePanesWithTargets()
+	for _, lp := range livePanes {
+		if paneBell[lp.paneID] {
+			_ = exec.Command(tb, "set-option", "-p", "-t", lp.paneID, "@beacon_pane_bell", "1").Run()
+		} else {
+			_ = exec.Command(tb, "set-option", "-p", "-t", lp.paneID, "-u", "@beacon_pane_bell").Run()
+		}
+	}
+
+	// Sync window-scope options.
+	liveWindows := listLiveWindows()
+	for _, wid := range liveWindows {
+		if windowBell[wid] {
+			_ = exec.Command(tb, "set-option", "-w", "-t", wid, "@beacon_window_bell", "1").Run()
+		} else {
+			_ = exec.Command(tb, "set-option", "-w", "-t", wid, "-u", "@beacon_window_bell").Run()
+		}
+	}
+
+	// Sync session-scope options (no -g; -t targets the specific session).
+	liveSessions := listLiveSessions()
+	for _, sname := range liveSessions {
+		if sessionBell[sname] {
+			_ = exec.Command(tb, "set-option", "-t", sname, "@beacon_session_bell", "1").Run()
+		} else {
+			_ = exec.Command(tb, "set-option", "-t", sname, "-u", "@beacon_session_bell").Run()
+		}
+	}
+}
+
+type livePaneTarget struct {
+	paneID   string
+	windowID string
+	session  string
+}
+
+func listLivePanesWithTargets() []livePaneTarget {
+	out, err := exec.Command(tmuxBin(), "list-panes", "-a", "-F", "#{pane_id}\t#{window_id}\t#{session_name}").Output()
+	if err != nil {
+		return nil
+	}
+	var panes []livePaneTarget
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Split(line, "\t")
+		if len(parts) < 3 {
+			continue
+		}
+		panes = append(panes, livePaneTarget{paneID: parts[0], windowID: parts[1], session: parts[2]})
+	}
+	return panes
+}
+
+func listLiveWindows() []string {
+	out, err := exec.Command(tmuxBin(), "list-windows", "-a", "-F", "#{window_id}").Output()
+	if err != nil {
+		return nil
+	}
+	var windows []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			windows = append(windows, line)
+		}
+	}
+	return windows
+}
+
+func listLiveSessions() []string {
+	out, err := exec.Command(tmuxBin(), "list-sessions", "-F", "#{session_name}").Output()
+	if err != nil {
+		return nil
+	}
+	var sessions []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			sessions = append(sessions, line)
+		}
+	}
+	return sessions
 }
 
 func cmdCleanup(args []string) int {
@@ -361,6 +593,7 @@ func cmdCleanup(args []string) int {
 	}
 	livePanes := listLivePanes()
 	store.Cleanup(nowSeconds(), state.CompletedTTLSeconds, livePanes)
+	syncBells(store)
 	return 0
 }
 
@@ -372,6 +605,7 @@ func cmdReset(args []string) int {
 	if err := store.Reset(); err != nil {
 		return 1
 	}
+	syncBells(store)
 	return 0
 }
 
@@ -502,6 +736,9 @@ func runReport(status, summary, cwd string) {
 					Time:    now,
 				})
 			}
+			if st, err := state.NewStore(defaultStateDir()); err == nil {
+				syncBells(st)
+			}
 			return
 		}
 	}
@@ -528,6 +765,7 @@ func runReport(status, summary, cwd string) {
 			Time:    now,
 		})
 	}
+	syncBells(store)
 }
 
 func runNotify(title, message string) {

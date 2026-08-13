@@ -21,12 +21,13 @@ const (
 
 // PaneRecord is the per-pane agent state written by hooks and report.
 type PaneRecord struct {
-	Session string `json:"session"`
-	Window  string `json:"window"`
-	Status  string `json:"status"`
-	Summary string `json:"summary"`
-	Time    int64  `json:"time"`
-	Cwd     string `json:"cwd"`
+	Session      string `json:"session"`
+	Window       string `json:"window"`
+	Status       string `json:"status"`
+	Summary      string `json:"summary"`
+	Time         int64  `json:"time"`
+	Cwd          string `json:"cwd"`
+	Acknowledged bool   `json:"acknowledged"`
 }
 
 // LastCompleted tracks the most recently completed pane for jump.
@@ -56,6 +57,16 @@ func NewState() *State {
 func validStatus(s string) bool {
 	switch s {
 	case "working", "waiting", "blocked", "completed":
+		return true
+	}
+	return false
+}
+
+// IsNotificationStatus returns true for statuses that require user attention
+// and should trigger a bell. "working" is a lifecycle state, not a notification.
+func IsNotificationStatus(s string) bool {
+	switch s {
+	case "waiting", "blocked", "completed":
 		return true
 	}
 	return false
@@ -167,12 +178,21 @@ func (s *Store) mutate(fn func(*State)) error {
 }
 
 // SetPane writes a pane record. Validates status and pane ID.
+// Notification statuses (waiting/blocked/completed) auto-set Acknowledged=false
+// to trigger a bell. "working" auto-sets Acknowledged=true (lifecycle, no bell).
 func (s *Store) SetPane(pane string, rec PaneRecord) error {
 	if pane == "" {
 		return fmt.Errorf("state: pane is required")
 	}
 	if !validStatus(rec.Status) {
 		return fmt.Errorf("state: unsupported status: %s", rec.Status)
+	}
+	// Auto-manage acknowledged flag based on status transition.
+	// Notification statuses reset the bell; working clears it.
+	if IsNotificationStatus(rec.Status) {
+		rec.Acknowledged = false
+	} else {
+		rec.Acknowledged = true
 	}
 	return s.mutate(func(st *State) {
 		if st.Panes == nil {
@@ -217,6 +237,61 @@ func (s *Store) Cleanup(now int64, ttl int64, livePanes []string) {
 			}
 		}
 	})
+}
+
+// Acknowledge marks a pane's notification as acknowledged (bell cleared).
+func (s *Store) Acknowledge(pane string) error {
+	if pane == "" {
+		return fmt.Errorf("state: pane is required")
+	}
+	return s.mutate(func(st *State) {
+		if rec, ok := st.Panes[pane]; ok {
+			rec.Acknowledged = true
+			st.Panes[pane] = rec
+		}
+	})
+}
+
+// PendingNotification represents an unacknowledged notification pane.
+type PendingNotification struct {
+	Pane    string
+	Session string
+	Window  string
+	Status  string
+	Summary string
+	Time    int64
+}
+
+// PendingNotifications returns all unacknowledged notification panes,
+// sorted by time ascending (oldest first).
+func (s *Store) PendingNotifications() []PendingNotification {
+	st, err := s.Load()
+	if err != nil {
+		return nil
+	}
+	var result []PendingNotification
+	for pane, rec := range st.Panes {
+		if IsNotificationStatus(rec.Status) && !rec.Acknowledged {
+			result = append(result, PendingNotification{
+				Pane:    pane,
+				Session: rec.Session,
+				Window:  rec.Window,
+				Status:  rec.Status,
+				Summary: rec.Summary,
+				Time:    rec.Time,
+			})
+		}
+	}
+	// Sort by time ascending (oldest first), with pane ID as stable tie-break.
+	for i := 0; i < len(result); i++ {
+		for j := i + 1; j < len(result); j++ {
+			if result[j].Time < result[i].Time ||
+				(result[j].Time == result[i].Time && result[j].Pane < result[i].Pane) {
+				result[i], result[j] = result[j], result[i]
+			}
+		}
+	}
+	return result
 }
 
 // Reset clears all state to the default empty document.
