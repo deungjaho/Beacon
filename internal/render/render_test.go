@@ -508,6 +508,50 @@ func TestRenderNoSeparatorWhenSingleSegment(t *testing.T) {
 	}
 }
 
+// TestRenderSegmentTrailingSpace verifies that each segment text is
+// followed by exactly one space, and the last segment has exactly one
+// space before the right cap (no double space).
+func TestRenderSegmentTrailingSpace(t *testing.T) {
+	m := collector.Metrics{
+		CPUPercent:      45,
+		CPUOK:           true,
+		MemPressure:     40,
+		MemPressureOK:   true,
+		ProcCount:       230,
+		ProcCountOK:     true,
+		PaneMem:         map[string]string{"%1": "120M"},
+		WindowMem:       map[string]string{"s:1": "340M"},
+		SessionMem:      map[string]string{"s": "1.2G"},
+		TotalMem:        "3.4G",
+		DiskOK:          true,
+		DiskUsed:        "12G",
+		DiskTotal:       "228G",
+		DiskAvailableKB: 8 * 1024 * 1024,
+	}
+	args := Args{Width: 400, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
+	out := Render(args, m)
+
+	// Each segment value must be followed by exactly one space.
+	// Verify "45% " (CPU), "40% " (pressure), "230 " (proc), etc.
+	for _, want := range []string{"45% ", "40% ", "230 ", "120M ", "340M ", "1.2G ", "3.4G ", "12G "} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected segment text followed by one space %q in %q", want, out)
+		}
+	}
+
+	// No double space anywhere.
+	if strings.Contains(out, "  ") {
+		t.Errorf("output must not contain double space: %q", out)
+	}
+
+	// The right cap must be immediately preceded by the last segment's
+	// single trailing space + the cap color sequence — not a double space.
+	cap := string('\u2588')
+	if strings.Contains(out, "  "+cap) {
+		t.Errorf("double space before right cap: %q", out)
+	}
+}
+
 func TestRenderAllSegmentsTogether(t *testing.T) {
 	m := collector.Metrics{
 		CPUPercent:      45,

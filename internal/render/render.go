@@ -183,8 +183,9 @@ func formatPowerline(statusBG string, segs []Segment) string {
 		}
 		b.WriteString("]")
 		b.WriteString(seg.Text)
+		b.WriteString(" ")
 		prevBG = seg.BG
 	}
-	b.WriteString(fmt.Sprintf(" #[fg=%s,bg=%s]%s", prevBG, statusBG, rightCap))
+	b.WriteString(fmt.Sprintf("#[fg=%s,bg=%s]%s", prevBG, statusBG, rightCap))
 	return b.String()
 }
