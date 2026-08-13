@@ -569,9 +569,16 @@ func TestRenderAllSegmentsTogether(t *testing.T) {
 	}
 	args := Args{Width: 400, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, m)
-	for _, want := range []string{"45%", "\uf4bc", "\uf080", "120M", "\U000F05B2", "340M", "\uebc8", "1.2G", "\U000F035B", "3.4G", "\uf46c", "230", "15G", "16G", "12G", "228G"} {
+	// status-right shows only used for sys mem and disk (not /total).
+	for _, want := range []string{"45%", "\uf4bc", "\uf080", "120M", "\U000F05B2", "340M", "\uebc8", "1.2G", "\U000F035B", "3.4G", "\uf46c", "230", "15G", "12G"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("wide render missing %q: %q", want, out)
+		}
+	}
+	// Total values must NOT appear in status-right.
+	for _, unwanted := range []string{"16G", "228G", "15G/16G", "12G/228G"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("wide render must not contain %q: %q", unwanted, out)
 		}
 	}
 }
@@ -580,8 +587,15 @@ func TestRenderSysMemSegment(t *testing.T) {
 	m := collector.Metrics{SysMemOK: true, SysMemUsed: "15G", SysMemTotal: "16G"}
 	args := Args{Width: 200, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, m)
-	if !strings.Contains(out, "15G/16G") {
-		t.Fatalf("missing sys mem used/total: %q", out)
+	// status-right shows only used, not /total.
+	if !strings.Contains(out, "15G") {
+		t.Fatalf("missing sys mem used: %q", out)
+	}
+	if strings.Contains(out, "15G/16G") {
+		t.Fatalf("sys mem must not show /total in status-right: %q", out)
+	}
+	if strings.Contains(out, "16G") {
+		t.Fatalf("sys mem must not contain total value: %q", out)
 	}
 }
 
@@ -589,7 +603,14 @@ func TestRenderDiskSegment(t *testing.T) {
 	m := collector.Metrics{DiskOK: true, DiskUsed: "12G", DiskTotal: "228G"}
 	args := Args{Width: 200, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, m)
-	if !strings.Contains(out, "12G/228G") {
-		t.Fatalf("missing disk used/total: %q", out)
+	// status-right shows only used, not /total.
+	if !strings.Contains(out, "12G") {
+		t.Fatalf("missing disk used: %q", out)
+	}
+	if strings.Contains(out, "12G/228G") {
+		t.Fatalf("disk must not show /total in status-right: %q", out)
+	}
+	if strings.Contains(out, "228G") {
+		t.Fatalf("disk must not contain total value: %q", out)
 	}
 }

@@ -143,21 +143,21 @@ func buildSegments(args Args, m collector.Metrics) []Segment {
 		})
 	}
 
-	// 8. System memory (used/total)
-	if m.SysMemOK && m.SysMemUsed != "" && m.SysMemTotal != "" {
+	// 8. System memory (used only; total is in snapshot/status JSON)
+	if m.SysMemOK && m.SysMemUsed != "" {
 		segs = append(segs, Segment{
 			FG:   "#F4F4E6",
 			BG:   "#2A5A5A",
-			Text: fmt.Sprintf("%s %s/%s", iconSysMem, m.SysMemUsed, m.SysMemTotal),
+			Text: fmt.Sprintf("%s %s", iconSysMem, m.SysMemUsed),
 		})
 	}
 
-	// 9. Root disk usage (used/total)
-	if m.DiskOK && m.DiskUsed != "" && m.DiskTotal != "" {
+	// 9. Root disk usage (used only; total is in snapshot/status JSON)
+	if m.DiskOK && m.DiskUsed != "" {
 		segs = append(segs, Segment{
 			FG:   "#F4F4E6",
 			BG:   "#1A4A4A",
-			Text: fmt.Sprintf("%s %s/%s", iconDisk, m.DiskUsed, m.DiskTotal),
+			Text: fmt.Sprintf("%s %s", iconDisk, m.DiskUsed),
 		})
 	}
 
