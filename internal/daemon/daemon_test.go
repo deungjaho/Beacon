@@ -186,10 +186,7 @@ func TestDaemonSampleFastDoesNotSetFootprint(t *testing.T) {
 	if m.FootprintOK {
 		t.Fatalf("footprint should not be OK after fast-only sample")
 	}
-	// SysMem and Disk should also be stale.
-	if !m.SysMemStale {
-		t.Fatalf("sys mem should be stale after fast-only sample")
-	}
+	// Disk should also be stale.
 	if !m.DiskStale {
 		t.Fatalf("disk should be stale after fast-only sample")
 	}
@@ -305,7 +302,7 @@ func TestDaemonShutdownNoLateWrite(t *testing.T) {
 
 // TestDaemonFastNotBlockedBySlow verifies that the fast tier is not blocked
 // when the slow tier is running. With the old global sampleMu, a slow
-// SampleSystemMemory call would block sampleFast.
+// SampleDisk call would block sampleFast.
 func TestDaemonFastNotBlockedBySlow(t *testing.T) {
 	d, _ := newTestDaemon(t)
 
@@ -447,12 +444,6 @@ func TestDaemonConcurrentSnapshotHasAllTiers(t *testing.T) {
 	}
 
 	// Slow tier should be populated.
-	if !m.SysMemOK {
-		t.Fatalf("sys mem should be OK in snapshot")
-	}
-	if m.SysMemTotalKB == 0 {
-		t.Fatalf("sys mem total should be non-zero")
-	}
 	if !m.DiskOK {
 		t.Fatalf("disk should be OK in snapshot")
 	}
@@ -472,8 +463,8 @@ func TestDaemonPersistCurrentNoStaleOverwrite(t *testing.T) {
 	d.mu.Lock()
 	d.current.CPUPercent = 10
 	d.current.CPUOK = true
-	d.current.SysMemTotalKB = 1000
-	d.current.SysMemOK = true
+	d.current.DiskTotalKB = 1000
+	d.current.DiskOK = true
 	d.mu.Unlock()
 
 	// Now update current to "new" values (simulating a fast tier finishing

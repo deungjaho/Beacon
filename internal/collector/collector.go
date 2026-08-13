@@ -10,8 +10,8 @@
 //   - Footprint (10s): per-pane/window/session/total tmux memory.
 //     Uses top -l 1 -n 999 (macOS physical footprint) or ps -eo (Linux RSS).
 //     May also update CPU/proc count as a bonus but does not replace fast.
-//   - Slow (60s): system memory used/total and root disk usage.
-//     Uses vm_stat + sysctl (macOS) or /proc/meminfo (Linux), and df -k /.
+//   - Slow (60s): root disk usage.
+//     Uses df -k (macOS: /System/Volumes/Data, Linux: /).
 //
 // Each tier writes its own fields with its own sampled_at timestamp.
 // The daemon merges all tiers into a single snapshot and retains
@@ -63,23 +63,17 @@ type Metrics struct {
 	FootprintStale bool              `json:"footprint_stale"`
 
 	// --- Slow tier (60s) ---
-	// System memory used/total (physical RAM, includes compressor on macOS).
-	SysMemUsedKB    uint64 `json:"sys_mem_used_kb"`
-	SysMemTotalKB   uint64 `json:"sys_mem_total_kb"`
-	SysMemOK        bool   `json:"sys_mem_ok"`
-	SysMemSampledAt int64  `json:"sys_mem_sampled_at"`
-	SysMemStale     bool   `json:"sys_mem_stale"`
-	SysMemUsed      string `json:"sys_mem_used"`
-	SysMemTotal     string `json:"sys_mem_total"`
-
-	// Root disk usage used/total.
-	DiskUsedKB    uint64 `json:"disk_used_kb"`
-	DiskTotalKB   uint64 `json:"disk_total_kb"`
-	DiskOK        bool   `json:"disk_ok"`
-	DiskSampledAt int64  `json:"disk_sampled_at"`
-	DiskStale     bool   `json:"disk_stale"`
-	DiskUsed      string `json:"disk_used"`
-	DiskTotal     string `json:"disk_total"`
+	// Root disk usage. DiskAvailableKB is the raw df "Available" column,
+	// retained for render-time color judgment (red when < 5 GiB).
+	// DiskUsed is consumed space (macOS: total-available, Linux: df Used).
+	DiskUsedKB      uint64 `json:"disk_used_kb"`
+	DiskTotalKB     uint64 `json:"disk_total_kb"`
+	DiskAvailableKB uint64 `json:"disk_available_kb"`
+	DiskOK          bool   `json:"disk_ok"`
+	DiskSampledAt   int64  `json:"disk_sampled_at"`
+	DiskStale       bool   `json:"disk_stale"`
+	DiskUsed        string `json:"disk_used"`
+	DiskTotal       string `json:"disk_total"`
 }
 
 // tmuxPane is a single pane entry from tmux list-panes.
@@ -614,89 +608,19 @@ func linuxMemPressurePercent(total, avail uint64) int {
 	return int(pct)
 }
 
-// --- System memory parsers ---
-
-// parseMacOSVmStat parses vm_stat output and returns (usedBytes, totalBytes, ok).
-// totalBytes comes from sysctl hw.memsize (passed separately).
-// used = total - (freePages + speculativePages) * pageSize.
-// This includes wired, active, inactive, and compressor memory.
-func parseMacOSVmStat(output string, totalBytes uint64) (uint64, bool) {
-	pageSize := uint64(16384) // default
-	var freePages, specPages uint64
-	pageSizeFound := false
-	scanner := bufio.NewScanner(strings.NewReader(output))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if strings.Contains(line, "page size of") {
-			// "Mach Virtual Memory Statistics: (page size of 16384 bytes)"
-			start := strings.Index(line, "page size of ")
-			if start < 0 {
-				continue
-			}
-			rest := line[start+len("page size of "):]
-			end := strings.Index(rest, " ")
-			if end < 0 {
-				continue
-			}
-			ps, err := strconv.ParseUint(rest[:end], 10, 64)
-			if err == nil && ps > 0 {
-				pageSize = ps
-				pageSizeFound = true
-			}
-		}
-		switch {
-		case strings.HasPrefix(line, "Pages free:"):
-			freePages = parseVmStatCount(line)
-		case strings.HasPrefix(line, "Pages speculative:"):
-			specPages = parseVmStatCount(line)
-		}
-	}
-	if !pageSizeFound && freePages == 0 && specPages == 0 {
-		// No useful data parsed.
-		return 0, false
-	}
-	free := (freePages + specPages) * pageSize
-	if free > totalBytes {
-		free = totalBytes
-	}
-	used := totalBytes - free
-	return used, true
-}
-
-// parseVmStatCount extracts the integer count from a vm_stat line like
-// "Pages free: 10261."
-func parseVmStatCount(line string) uint64 {
-	idx := strings.Index(line, ":")
-	if idx < 0 {
-		return 0
-	}
-	rest := strings.TrimSpace(line[idx+1:])
-	rest = strings.TrimRight(rest, ".")
-	val, err := strconv.ParseUint(rest, 10, 64)
-	if err != nil {
-		return 0
-	}
-	return val
-}
-
-// parseSysctlMemSize parses sysctl hw.memsize output (e.g. "hw.memsize: 17179869184").
-func parseSysctlMemSize(output string) (uint64, bool) {
-	fields := strings.Fields(strings.TrimSpace(output))
-	if len(fields) < 2 {
-		return 0, false
-	}
-	val, err := strconv.ParseUint(fields[len(fields)-1], 10, 64)
-	if err != nil {
-		return 0, false
-	}
-	return val, true
-}
-
 // --- Disk usage parser ---
 
-// parseDfOutput parses `df -k /` output and returns (usedKB, totalKB, ok).
-// Expected format: "Filesystem 1K-blocks Used Available Capacity Mounted on\n/dev/... 239362496 12346296 11785340 52% /"
-func parseDfOutput(output string) (uint64, uint64, bool) {
+// DiskSample holds the raw df output fields in KB.
+type DiskSample struct {
+	TotalKB     uint64
+	UsedKB      uint64 // df "Used" column
+	AvailableKB uint64 // df "Available" column
+}
+
+// parseDfOutput parses `df -k <path>` output and returns total/used/available.
+// Expected format: "Filesystem 1K-blocks Used Available ...\n/dev/... N N N ..."
+// Returns ok=false if no valid data line is found.
+func parseDfOutput(output string) (DiskSample, bool) {
 	scanner := bufio.NewScanner(strings.NewReader(output))
 	first := true
 	for scanner.Scan() {
@@ -720,9 +644,13 @@ func parseDfOutput(output string) (uint64, uint64, bool) {
 		if err != nil {
 			continue
 		}
-		return used, total, true
+		avail, err := strconv.ParseUint(fields[3], 10, 64)
+		if err != nil {
+			continue
+		}
+		return DiskSample{TotalKB: total, UsedKB: used, AvailableKB: avail}, true
 	}
-	return 0, 0, false
+	return DiskSample{}, false
 }
 
 // --- Collector ---
@@ -904,49 +832,10 @@ func (c *Collector) SampleFootprint() (paneMemoryResult, bool) {
 	return result, true
 }
 
-// SampleSystemMemory collects system memory used/total in bytes.
-// macOS: vm_stat + sysctl hw.memsize.
-// Linux: /proc/meminfo (MemTotal - MemAvailable).
-// Returns (usedBytes, totalBytes, ok).
-func (c *Collector) SampleSystemMemory() (uint64, uint64, bool) {
-	switch c.os {
-	case "darwin":
-		vmOut, err := runCommand("vm_stat")
-		if err != nil {
-			return 0, 0, false
-		}
-		sysctlOut, err := runCommand("sysctl", "hw.memsize")
-		if err != nil {
-			return 0, 0, false
-		}
-		total, ok := parseSysctlMemSize(string(sysctlOut))
-		if !ok {
-			return 0, 0, false
-		}
-		used, ok := parseMacOSVmStat(string(vmOut), total)
-		if !ok {
-			return 0, 0, false
-		}
-		return used, total, true
-	case "linux":
-		out, err := runCommand("cat", "/proc/meminfo")
-		if err != nil {
-			return 0, 0, false
-		}
-		total, avail, ok := parseLinuxMemInfo(string(out))
-		if !ok {
-			return 0, 0, false
-		}
-		used := total - avail
-		return used, total, true
-	}
-	return 0, 0, false
-}
-
 // diskSamplePath returns the df argument for disk usage sampling.
 // On macOS, the root mount point is a read-only System volume; the real
-// user data lives on /System/Volumes/Data. If that path exists, use it;
-// otherwise fall back to / (Linux or older macOS).
+// user data lives on /System/Volumes/Data (the APFS/Data container).
+// If that path exists, use it; otherwise fall back to / (Linux or older macOS).
 func diskSamplePath(goos string, exists func(string) bool) string {
 	if goos == "darwin" && exists("/System/Volumes/Data") {
 		return "/System/Volumes/Data"
@@ -960,12 +849,42 @@ func pathExists(path string) bool {
 	return err == nil && info.IsDir()
 }
 
-// SampleDisk collects root disk usage used/total in KB.
-func (c *Collector) SampleDisk() (uint64, uint64, bool) {
+// computeDiskUsed derives the "used" KB from a raw df sample.
+// On macOS (darwin), the APFS/Data container's df "Used" column reports
+// only snapshot/clone space — not actual consumed space. The real consumed
+// space is total - available. Available may exceed total on sparse
+// filesystems; it is clamped to total to prevent underflow.
+// On Linux, df "Used" is the standard metric and is returned directly.
+func computeDiskUsed(goos string, s DiskSample) uint64 {
+	switch goos {
+	case "darwin":
+		avail := s.AvailableKB
+		if avail > s.TotalKB {
+			avail = s.TotalKB
+		}
+		return s.TotalKB - avail
+	default:
+		return s.UsedKB
+	}
+}
+
+// SampleDisk collects root disk usage: used, total, and available (all in KB).
+// On macOS, the APFS/Data container reports Used (df column 3) which is
+// the space used by snapshots and clones — not the actual consumed space.
+// The real consumed space is total - available. We return that as Used.
+// On Linux, df Used is the standard metric and is returned directly.
+// Available is always the raw df "Available" column, used by render for
+// low-disk color judgment (red when < 5 GiB).
+func (c *Collector) SampleDisk() (used, total, available uint64, ok bool) {
 	path := diskSamplePath(c.os, pathExists)
 	out, err := runCommand("df", "-k", path)
 	if err != nil {
-		return 0, 0, false
+		return 0, 0, 0, false
 	}
-	return parseDfOutput(string(out))
+	sample, ok := parseDfOutput(string(out))
+	if !ok {
+		return 0, 0, 0, false
+	}
+	used = computeDiskUsed(c.os, sample)
+	return used, sample.TotalKB, sample.AvailableKB, true
 }

@@ -34,7 +34,7 @@ and marked stale.
 |------|----------|---------|--------------|--------------|
 | Fast | 4s | CPU usage, memory pressure, process count | `iostat -c 2 -w 1`, `memory_pressure`, `ps aux` | `/proc/stat`, `/proc/meminfo`, `ps aux` |
 | Footprint | 10s | per-pane/window/session/total tmux memory | `top -l 1 -n 999` (physical footprint) | `ps -eo pid,ppid,rss` (RSS) |
-| Slow | 60s | system memory used/total, root disk used/total | `vm_stat` + `sysctl hw.memsize`, `df -k /System/Volumes/Data` | `/proc/meminfo`, `df -k /` |
+| Slow | 60s | root disk used/total | `df -k /System/Volumes/Data` (consumed = total − available) | `df -k /` (Used) |
 
 The fast tier (4s) matches the tmux 5s status refresh and never scans
 the full process list. The footprint tier (10s) runs `top -n 999` which
@@ -51,17 +51,6 @@ Per-process memory (`MemoryKB`) uses different semantics by platform:
   `"footprint"`.
 - **Linux**: RSS (resident set size) from `ps`. This is the standard
   per-process memory metric on Linux. The `MemoryKind` is `"rss"`.
-
-System memory (used/total) is measured independently from per-process
-memory:
-
-- **macOS**: `vm_stat` free pages + `sysctl hw.memsize` total.
-  Used = total − (free + speculative) × page_size. This includes
-  wired, active, inactive, and compressor memory.
-- **Linux**: `/proc/meminfo` MemTotal − MemAvailable.
-
-System memory and per-process footprint are **not** summed — they are
-independent measurements displayed as separate segments.
 
 ## Capabilities
 
@@ -151,8 +140,8 @@ failure. `beacon doctor` reports daemon, socket, and cache freshness.
 ## Status bar segments
 
 Strict display order: CPU, memory pressure, process count, pane
-memory, window memory, session memory, total tmux memory, system memory,
-root disk. All available metrics are always rendered in fixed order;
+memory, window memory, session memory, total tmux memory, root disk.
+All available metrics are always rendered in fixed order;
 tmux handles truncation natively when the terminal is narrow.
 
 Agent notifications (waiting/blocked/completed) are not shown in
@@ -191,8 +180,7 @@ POSIX shell-quoted to prevent injection.
 | Window memory | `󰖲` | `#5A8A8A` | 10s |
 | Session memory | `` | `#4A7A7A` | 10s |
 | Total tmux memory | `󰍛` | `#3A6A6A` | 10s |
-| System memory | `󰈐` | `#2A5A5A` | 60s |
-| Root disk | `` | `#1A4A4A` | 60s |
+| Root disk | `` | `#DFAF8F` (red `#CC9393` when available < 5 GiB) | 60s |
 
 ## Boundaries
 

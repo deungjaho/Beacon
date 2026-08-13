@@ -402,82 +402,127 @@ func TestParseMacOSTopProcessesEmpty(t *testing.T) {
 	}
 }
 
-// --- System memory parsing tests ---
-
-func TestParseMacOSVmStat(t *testing.T) {
-	input := `Mach Virtual Memory Statistics: (page size of 16384 bytes)
-Pages free:                                    10261.
-Pages active:                                 243531.
-Pages inactive:                               236491.
-Pages speculative:                              6423.
-Pages wired down:                             219629.
-Pages occupied by compressor:                 292857.
-`
-	totalBytes := uint64(17179869184) // 16GB
-	used, ok := parseMacOSVmStat(input, totalBytes)
-	if !ok {
-		t.Fatal("expected ok")
-	}
-	pageSize := uint64(16384)
-	freePages := uint64(10261) + uint64(6423) // free + speculative
-	free := freePages * pageSize
-	want := totalBytes - free
-	if used != want {
-		t.Fatalf("used: got %d want %d", used, want)
-	}
-}
-
-func TestParseMacOSVmStatNoData(t *testing.T) {
-	input := "garbage\nno useful lines\n"
-	_, ok := parseMacOSVmStat(input, 17179869184)
-	if ok {
-		t.Fatal("expected not ok for garbage input")
-	}
-}
-
-func TestParseSysctlMemSize(t *testing.T) {
-	tests := []struct {
-		input string
-		want  uint64
-		ok    bool
-	}{
-		{"hw.memsize: 17179869184", 17179869184, true},
-		{"hw.memsize: 8589934592", 8589934592, true},
-		{"", 0, false},
-		{"garbage", 0, false},
-	}
-	for _, tc := range tests {
-		got, ok := parseSysctlMemSize(tc.input)
-		if ok != tc.ok {
-			t.Errorf("parseSysctlMemSize(%q): ok got %v want %v", tc.input, ok, tc.ok)
-			continue
-		}
-		if ok && got != tc.want {
-			t.Errorf("parseSysctlMemSize(%q): got %d want %d", tc.input, got, tc.want)
-		}
-	}
-}
-
 // --- Disk usage parsing tests ---
 
 func TestParseDfOutput(t *testing.T) {
 	input := "Filesystem     1K-blocks      Used Available Capacity Mounted on\n/dev/disk3s1s1 239362496 12346296 11785340    52%  /\n"
-	used, total, ok := parseDfOutput(input)
+	s, ok := parseDfOutput(input)
 	if !ok {
 		t.Fatal("expected ok")
 	}
-	if total != 239362496 {
-		t.Fatalf("total: got %d want 239362496", total)
+	if s.TotalKB != 239362496 {
+		t.Fatalf("total: got %d want 239362496", s.TotalKB)
 	}
-	if used != 12346296 {
-		t.Fatalf("used: got %d want 12346296", used)
+	if s.UsedKB != 12346296 {
+		t.Fatalf("used: got %d want 12346296", s.UsedKB)
+	}
+	if s.AvailableKB != 11785340 {
+		t.Fatalf("available: got %d want 11785340", s.AvailableKB)
 	}
 }
 
 func TestParseDfOutputEmpty(t *testing.T) {
-	_, _, ok := parseDfOutput("Filesystem 1K-blocks Used Available\n")
+	_, ok := parseDfOutput("Filesystem 1K-blocks Used Available\n")
 	if ok {
 		t.Fatal("expected not ok for header-only input")
+	}
+}
+
+func TestParseDfOutputMalformed(t *testing.T) {
+	tests := []string{
+		"",
+		"garbage",
+		"Filesystem 1K-blocks Used Available\n",
+		"Filesystem 1K-blocks Used Available\n/dev/sda1 abc def ghi 50% /\n",
+	}
+	for _, input := range tests {
+		_, ok := parseDfOutput(input)
+		if ok {
+			t.Errorf("expected not ok for input %q", input)
+		}
+	}
+}
+
+// TestParseDfOutputLinuxRoot verifies the df parser handles real Linux
+// df -k / output format (with Use% column).
+func TestParseDfOutputLinuxRoot(t *testing.T) {
+	input := "Filesystem     1K-blocks      Used Available Use% Mounted on\n" +
+		"/dev/sda1      239362496 192196232  11908312  95% /\n"
+	s, ok := parseDfOutput(input)
+	if !ok {
+		t.Fatalf("parse failed")
+	}
+	if s.UsedKB != 192196232 {
+		t.Fatalf("used: got %d want 192196232", s.UsedKB)
+	}
+	if s.TotalKB != 239362496 {
+		t.Fatalf("total: got %d want 239362496", s.TotalKB)
+	}
+	if s.AvailableKB != 11908312 {
+		t.Fatalf("available: got %d want 11908312", s.AvailableKB)
+	}
+}
+
+// TestComputeDiskUsed verifies the pure disk-used derivation logic:
+// Darwin: consumed = total - available (clamped against underflow).
+// Linux: df Used column returned directly.
+func TestComputeDiskUsed(t *testing.T) {
+	tests := []struct {
+		name string
+		goos string
+		s    DiskSample
+		want uint64
+	}{
+		{
+			name: "darwin normal",
+			goos: "darwin",
+			s:    DiskSample{TotalKB: 228 * 1024 * 1024, UsedKB: 12 * 1024 * 1024, AvailableKB: 8 * 1024 * 1024},
+			want: 228*1024*1024 - 8*1024*1024, // 220 GiB
+		},
+		{
+			name: "darwin available exceeds total (clamp)",
+			goos: "darwin",
+			s:    DiskSample{TotalKB: 100, UsedKB: 10, AvailableKB: 200},
+			want: 0, // clamped: 100 - 100 = 0
+		},
+		{
+			name: "darwin available equals total",
+			goos: "darwin",
+			s:    DiskSample{TotalKB: 100, UsedKB: 0, AvailableKB: 100},
+			want: 0,
+		},
+		{
+			name: "darwin zero available",
+			goos: "darwin",
+			s:    DiskSample{TotalKB: 100, UsedKB: 5, AvailableKB: 0},
+			want: 100,
+		},
+		{
+			name: "linux uses df Used directly",
+			goos: "linux",
+			s:    DiskSample{TotalKB: 239362496, UsedKB: 192196232, AvailableKB: 11908312},
+			want: 192196232,
+		},
+		{
+			name: "linux ignores available for used",
+			goos: "linux",
+			s:    DiskSample{TotalKB: 100, UsedKB: 42, AvailableKB: 200},
+			want: 42, // available > total doesn't matter on Linux
+		},
+		{
+			name: "unknown os falls back to df Used",
+			goos: "",
+			s:    DiskSample{TotalKB: 100, UsedKB: 55, AvailableKB: 45},
+			want: 55,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := computeDiskUsed(tc.goos, tc.s)
+			if got != tc.want {
+				t.Fatalf("computeDiskUsed(%q, %+v): got %d want %d", tc.goos, tc.s, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -601,22 +646,5 @@ func TestDiskSamplePath(t *testing.T) {
 				t.Fatalf("diskSamplePath(%q): got %q want %q", tt.goos, got, tt.want)
 			}
 		})
-	}
-}
-
-// TestParseDfOutputLinuxRoot verifies the df parser handles real Linux
-// df -k / output format (with Use% column).
-func TestParseDfOutputLinuxRoot(t *testing.T) {
-	input := "Filesystem     1K-blocks      Used Available Use% Mounted on\n" +
-		"/dev/sda1      239362496 192196232  11908312  95% /\n"
-	used, total, ok := parseDfOutput(input)
-	if !ok {
-		t.Fatalf("parse failed")
-	}
-	if used != 192196232 {
-		t.Fatalf("used: got %d want 192196232", used)
-	}
-	if total != 239362496 {
-		t.Fatalf("total: got %d want 239362496", total)
 	}
 }

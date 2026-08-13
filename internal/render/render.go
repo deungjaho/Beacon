@@ -7,8 +7,7 @@
 // bell in the session/window/pane name (handled by the dotfile tmux
 // status scripts). This renderer shows only resource metrics in a
 // strict order: CPU, memory pressure, process count, pane memory,
-// window memory, session memory, total tmux memory, system memory,
-// root disk usage.
+// window memory, session memory, total tmux memory, root disk usage.
 //
 // All available metrics are always rendered in fixed order. The renderer
 // does NOT hide segments based on terminal width — insufficient space is
@@ -48,8 +47,7 @@ const (
 	iconTotalMem    = "\U000F035B"
 	iconProcCount   = "\uf46c"
 	iconMemPressure = "\uf080"
-	iconSysMem      = "\U000F0210" // memory icon for system RAM (U+F0210)
-	iconDisk        = "\uf0a0"     // disk icon (U+F0A0)
+	iconDisk        = "\uf0a0" // disk icon (U+F0A0)
 )
 
 // Render produces the final tmux status-right string.
@@ -70,7 +68,7 @@ func Render(args Args, m collector.Metrics) string {
 
 // buildSegments builds resource-only segments in strict order:
 // CPU, memory pressure, process count, pane memory, window memory,
-// session memory, total tmux memory, system memory, root disk usage.
+// session memory, total tmux memory, root disk usage.
 func buildSegments(args Args, m collector.Metrics) []Segment {
 	var segs []Segment
 
@@ -143,25 +141,34 @@ func buildSegments(args Args, m collector.Metrics) []Segment {
 		})
 	}
 
-	// 8. System memory (used only; total is in snapshot/status JSON)
-	if m.SysMemOK && m.SysMemUsed != "" {
-		segs = append(segs, Segment{
-			FG:   "#F4F4E6",
-			BG:   "#2A5A5A",
-			Text: fmt.Sprintf("%s %s", iconSysMem, m.SysMemUsed),
-		})
-	}
-
-	// 9. Root disk usage (used only; total is in snapshot/status JSON)
+	// 8. Root disk usage (used only; total is in snapshot/status JSON)
+	// Background is warm-brown by default, red when available < 5 GiB.
+	// Color is judged from the raw df Available field, not total-used.
 	if m.DiskOK && m.DiskUsed != "" {
 		segs = append(segs, Segment{
-			FG:   "#F4F4E6",
-			BG:   "#1A4A4A",
+			FG:   "#1d1f21",
+			BG:   diskBGColor(m.DiskAvailableKB),
 			Text: fmt.Sprintf("%s %s", iconDisk, m.DiskUsed),
 		})
 	}
 
 	return segs
+}
+
+// diskLowWatermarkKB is the threshold below which the disk segment turns red.
+// 5 GiB = 5 * 1024 * 1024 KB.
+const diskLowWatermarkKB uint64 = 5 * 1024 * 1024
+
+// diskBGColor returns the disk segment background color.
+// Red (#CC9393) when available space is strictly below 5 GiB (including 0);
+// warm-brown (#DFAF8F) when available >= 5 GiB.
+// A failed sample is expressed by DiskOK=false (segment not rendered),
+// not by a zero available value.
+func diskBGColor(availableKB uint64) string {
+	if availableKB < diskLowWatermarkKB {
+		return "#CC9393"
+	}
+	return "#DFAF8F"
 }
 
 func formatPowerline(statusBG string, segs []Segment) string {

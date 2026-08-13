@@ -8,40 +8,6 @@ import (
 	"beacon/internal/collector"
 )
 
-func TestIconSysMemBytes(t *testing.T) {
-	// iconSysMem must be exactly U+F0210 — a supplementary-plane code point.
-	// Valid UTF-8 is 4 bytes: F3 B0 88 90.
-	// The old \uf0210 escape was parsed as U+F021 + ASCII '0'
-	// (two runes, 4 bytes: 0xEF 0x88 0xA1 0x30), which is wrong.
-	const wantRune = '\U000F0210'
-	wantBytes := []byte{0xF3, 0xB0, 0x88, 0x90}
-
-	// Rune-level: must be a single rune equal to U+F0210.
-	if utf8.RuneCountInString(iconSysMem) != 1 {
-		t.Fatalf("iconSysMem rune count: got %d want 1 (bytes=% x)", utf8.RuneCountInString(iconSysMem), []byte(iconSysMem))
-	}
-	r, _ := utf8.DecodeRuneInString(iconSysMem)
-	if r != wantRune {
-		t.Fatalf("iconSysMem rune: got U+%04X want U+%04X", r, wantRune)
-	}
-
-	// Byte-level: exact 4 bytes.
-	got := []byte(iconSysMem)
-	if len(got) != len(wantBytes) {
-		t.Fatalf("iconSysMem byte length: got %d want %d (bytes=% x)", len(got), len(wantBytes), got)
-	}
-	for i := range wantBytes {
-		if got[i] != wantBytes[i] {
-			t.Fatalf("iconSysMem byte %d: got 0x%02X want 0x%02X (bytes=% x)", i, got[i], wantBytes[i], got)
-		}
-	}
-
-	// Must NOT contain a trailing ASCII '0' (0x30) — the old bug.
-	if strings.Contains(iconSysMem, "0") {
-		t.Fatalf("iconSysMem must not contain ASCII '0': % x", got)
-	}
-}
-
 func TestIconDiskBytes(t *testing.T) {
 	// iconDisk is U+F0A0 (BMP) → 3 UTF-8 bytes: 0xEF 0x82 0xA0.
 	const wantRune = '\uF0A0'
@@ -100,24 +66,22 @@ func TestRenderNoAgentStatus(t *testing.T) {
 
 func TestRenderStrictResourceOrder(t *testing.T) {
 	// Strict order: CPU, pressure, proc count, pane mem, window mem, session mem,
-	// total mem, system mem, disk.
+	// total mem, disk.
 	m := collector.Metrics{
-		CPUPercent:    45,
-		CPUOK:         true,
-		MemPressure:   40,
-		MemPressureOK: true,
-		ProcCount:     230,
-		ProcCountOK:   true,
-		PaneMem:       map[string]string{"%1": "120M"},
-		WindowMem:     map[string]string{"s:1": "340M"},
-		SessionMem:    map[string]string{"s": "1.2G"},
-		TotalMem:      "3.4G",
-		SysMemOK:      true,
-		SysMemUsed:    "15G",
-		SysMemTotal:   "16G",
-		DiskOK:        true,
-		DiskUsed:      "12G",
-		DiskTotal:     "228G",
+		CPUPercent:      45,
+		CPUOK:           true,
+		MemPressure:     40,
+		MemPressureOK:   true,
+		ProcCount:       230,
+		ProcCountOK:     true,
+		PaneMem:         map[string]string{"%1": "120M"},
+		WindowMem:       map[string]string{"s:1": "340M"},
+		SessionMem:      map[string]string{"s": "1.2G"},
+		TotalMem:        "3.4G",
+		DiskOK:          true,
+		DiskUsed:        "12G",
+		DiskTotal:       "228G",
+		DiskAvailableKB: 8 * 1024 * 1024,
 	}
 	args := Args{Width: 400, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, m)
@@ -134,7 +98,6 @@ func TestRenderStrictResourceOrder(t *testing.T) {
 		{"window-mem", '\U000F05B2'},
 		{"session-mem", '\uEBC8'},
 		{"total-mem", '\U000F035B'},
-		{"sys-mem", '\U000F0210'},
 		{"disk", '\uF0A0'},
 	}
 	prevPos := -1
@@ -241,29 +204,27 @@ func TestRenderWindowSessionTotalMemory(t *testing.T) {
 // regardless of width — tmux handles truncation natively.
 func TestRenderWidthInvariant(t *testing.T) {
 	m := collector.Metrics{
-		CPUPercent:    50,
-		CPUOK:         true,
-		MemPressure:   40,
-		MemPressureOK: true,
-		ProcCount:     230,
-		ProcCountOK:   true,
-		PaneMem:       map[string]string{"%1": "120M"},
-		WindowMem:     map[string]string{"s:1": "340M"},
-		SessionMem:    map[string]string{"s": "1.2G"},
-		TotalMem:      "3.4G",
-		SysMemOK:      true,
-		SysMemUsed:    "15G",
-		SysMemTotal:   "16G",
-		DiskOK:        true,
-		DiskUsed:      "12G",
-		DiskTotal:     "228G",
+		CPUPercent:      50,
+		CPUOK:           true,
+		MemPressure:     40,
+		MemPressureOK:   true,
+		ProcCount:       230,
+		ProcCountOK:     true,
+		PaneMem:         map[string]string{"%1": "120M"},
+		WindowMem:       map[string]string{"s:1": "340M"},
+		SessionMem:      map[string]string{"s": "1.2G"},
+		TotalMem:        "3.4G",
+		DiskOK:          true,
+		DiskUsed:        "12G",
+		DiskTotal:       "228G",
+		DiskAvailableKB: 8 * 1024 * 1024,
 	}
 	// Run at several widths including very narrow ones.
 	widths := []int{20, 40, 60, 80, 120, 160, 200, 0}
 	for _, w := range widths {
 		args := Args{Width: w, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 		out := Render(args, m)
-		// All 9 segments must be present at every width.
+		// All 8 segments must be present at every width.
 		checks := []struct{ name, needle string }{
 			{"CPU", "\uf4bc"},
 			{"pressure", "\uf080"},
@@ -272,7 +233,6 @@ func TestRenderWidthInvariant(t *testing.T) {
 			{"window mem", "\U000F05B2"},
 			{"session mem", "\uebc8"},
 			{"total mem", "\U000F035B"},
-			{"sys mem", "\U000F0210"},
 			{"disk", "\uf0a0"},
 		}
 		for _, c := range checks {
@@ -550,57 +510,39 @@ func TestRenderNoSeparatorWhenSingleSegment(t *testing.T) {
 
 func TestRenderAllSegmentsTogether(t *testing.T) {
 	m := collector.Metrics{
-		CPUPercent:    45,
-		CPUOK:         true,
-		MemPressure:   40,
-		MemPressureOK: true,
-		ProcCount:     230,
-		ProcCountOK:   true,
-		PaneMem:       map[string]string{"%1": "120M"},
-		WindowMem:     map[string]string{"s:1": "340M"},
-		SessionMem:    map[string]string{"s": "1.2G"},
-		TotalMem:      "3.4G",
-		SysMemOK:      true,
-		SysMemUsed:    "15G",
-		SysMemTotal:   "16G",
-		DiskOK:        true,
-		DiskUsed:      "12G",
-		DiskTotal:     "228G",
+		CPUPercent:      45,
+		CPUOK:           true,
+		MemPressure:     40,
+		MemPressureOK:   true,
+		ProcCount:       230,
+		ProcCountOK:     true,
+		PaneMem:         map[string]string{"%1": "120M"},
+		WindowMem:       map[string]string{"s:1": "340M"},
+		SessionMem:      map[string]string{"s": "1.2G"},
+		TotalMem:        "3.4G",
+		DiskOK:          true,
+		DiskUsed:        "12G",
+		DiskTotal:       "228G",
+		DiskAvailableKB: 8 * 1024 * 1024,
 	}
 	args := Args{Width: 400, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, m)
-	// status-right shows only used for sys mem and disk (not /total).
-	for _, want := range []string{"45%", "\uf4bc", "\uf080", "120M", "\U000F05B2", "340M", "\uebc8", "1.2G", "\U000F035B", "3.4G", "\uf46c", "230", "15G", "12G"} {
+	// status-right shows only used for disk (not /total).
+	for _, want := range []string{"45%", "\uf4bc", "\uf080", "120M", "\U000F05B2", "340M", "\uebc8", "1.2G", "\U000F035B", "3.4G", "\uf46c", "230", "12G"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("wide render missing %q: %q", want, out)
 		}
 	}
 	// Total values must NOT appear in status-right.
-	for _, unwanted := range []string{"16G", "228G", "15G/16G", "12G/228G"} {
+	for _, unwanted := range []string{"228G", "12G/228G"} {
 		if strings.Contains(out, unwanted) {
 			t.Fatalf("wide render must not contain %q: %q", unwanted, out)
 		}
 	}
 }
 
-func TestRenderSysMemSegment(t *testing.T) {
-	m := collector.Metrics{SysMemOK: true, SysMemUsed: "15G", SysMemTotal: "16G"}
-	args := Args{Width: 200, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
-	out := Render(args, m)
-	// status-right shows only used, not /total.
-	if !strings.Contains(out, "15G") {
-		t.Fatalf("missing sys mem used: %q", out)
-	}
-	if strings.Contains(out, "15G/16G") {
-		t.Fatalf("sys mem must not show /total in status-right: %q", out)
-	}
-	if strings.Contains(out, "16G") {
-		t.Fatalf("sys mem must not contain total value: %q", out)
-	}
-}
-
 func TestRenderDiskSegment(t *testing.T) {
-	m := collector.Metrics{DiskOK: true, DiskUsed: "12G", DiskTotal: "228G"}
+	m := collector.Metrics{DiskOK: true, DiskUsed: "12G", DiskTotal: "228G", DiskAvailableKB: 8 * 1024 * 1024}
 	args := Args{Width: 200, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
 	out := Render(args, m)
 	// status-right shows only used, not /total.
@@ -613,4 +555,84 @@ func TestRenderDiskSegment(t *testing.T) {
 	if strings.Contains(out, "228G") {
 		t.Fatalf("disk must not contain total value: %q", out)
 	}
+	// Default warm-brown background, dark foreground.
+	if !strings.Contains(out, "bg=#DFAF8F") {
+		t.Fatalf("missing disk bg #DFAF8F: %q", out)
+	}
+	if !strings.Contains(out, "fg=#1d1f21,bg=#DFAF8F") {
+		t.Fatalf("missing disk fg #1d1f21: %q", out)
+	}
+}
+
+func TestDiskBGColor(t *testing.T) {
+	// 5 GiB = 5 * 1024 * 1024 KB
+	const giB5 = uint64(5 * 1024 * 1024)
+	tests := []struct {
+		name        string
+		availableKB uint64
+		want        string
+	}{
+		{"5GiB-1 red", giB5 - 1, "#CC9393"},
+		{"exactly 5GiB brown", giB5, "#DFAF8F"},
+		{"above 5GiB brown", giB5 + 1, "#DFAF8F"},
+		{"0 red", 0, "#CC9393"},
+		{"8.5GiB brown (typical)", 8*1024*1024 + 512*1024, "#DFAF8F"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := diskBGColor(tc.availableKB)
+			if got != tc.want {
+				t.Fatalf("diskBGColor(%d): got %q want %q", tc.availableKB, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRenderDiskSegmentColorByAvailable(t *testing.T) {
+	// Verify render uses DiskAvailableKB for color, not total-used.
+	tests := []struct {
+		name    string
+		availKB uint64
+		wantBG  string
+	}{
+		{"low available → red", 4 * 1024 * 1024, "#CC9393"},
+		{"sufficient available → brown", 8 * 1024 * 1024, "#DFAF8F"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			m := collector.Metrics{
+				DiskOK:          true,
+				DiskUsed:        "220G",
+				DiskTotal:       "228G",
+				DiskAvailableKB: tc.availKB,
+			}
+			args := Args{Width: 200, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
+			out := Render(args, m)
+			if !strings.Contains(out, "bg="+tc.wantBG) {
+				t.Fatalf("disk bg: got %q want %s in %q", out, tc.wantBG, out)
+			}
+			// Text still shows only used, not available.
+			if !strings.Contains(out, "220G") {
+				t.Fatalf("missing disk used value: %q", out)
+			}
+		})
+	}
+}
+
+func TestRenderPowerlineSeparatorBetweenTotalMemAndDisk(t *testing.T) {
+	// Total mem → bg #3A6A6A. Disk → bg #DFAF8F (default brown).
+	m := collector.Metrics{
+		TotalMem:        "3.4G",
+		DiskOK:          true,
+		DiskUsed:        "12G",
+		DiskAvailableKB: 8 * 1024 * 1024,
+	}
+	args := Args{Width: 200, StatusBG: "black", PaneID: "%1", WindowID: "@1", SessionName: "s", WindowIndex: "1"}
+	out := []byte(Render(args, m))
+
+	sep := exactBytes('\uE0B2')
+	boundary := []byte("#DFAF8F,bg=#3A6A6A]")
+	boundary = append(boundary, sep...)
+	boundary = append(boundary, []byte("#[fg=#1d1f21,bg=#DFAF8F")...)
+	assertBytesIn(t, "separator-totalmem-to-disk", out, boundary)
 }

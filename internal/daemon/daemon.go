@@ -35,7 +35,7 @@ type Config struct {
 // guard so a slow tier never blocks a fast one:
 //   - fast (Interval, default 4s): CPU, memory pressure, process count
 //   - footprint (10s): per-pane/window/session/total tmux memory
-//   - slow (60s): system memory and root disk usage
+//   - slow (60s): root disk usage
 //
 // If a tier's tick fires while that tier is still sampling, the tick is
 // skipped (not queued) and a dropped counter is incremented. This prevents
@@ -234,11 +234,6 @@ func (d *Daemon) sampleFast() {
 	} else if now-m.FootprintAt > 30 {
 		m.FootprintStale = true
 	}
-	if !m.SysMemOK || m.SysMemSampledAt == 0 {
-		m.SysMemStale = true
-	} else if now-m.SysMemSampledAt > 120 {
-		m.SysMemStale = true
-	}
 	if !m.DiskOK || m.DiskSampledAt == 0 {
 		m.DiskStale = true
 	} else if now-m.DiskSampledAt > 120 {
@@ -292,33 +287,21 @@ func (d *Daemon) sampleFootprint() {
 	d.persistCurrent()
 }
 
-// sampleSlow collects system memory and root disk usage.
+// sampleSlow collects root disk usage.
 // External commands run outside the lock so they don't block fast-tier
 // merges. Only the short merge phase holds d.mu.
 func (d *Daemon) sampleSlow() {
-	// Collect outside the lock — these are slow external commands.
-	usedBytes, totalBytes, memOK := d.collector.SampleSystemMemory()
-	diskUsed, diskTotal, diskOK := d.collector.SampleDisk()
+	// Collect outside the lock — this is a slow external command.
+	diskUsed, diskTotal, diskAvail, diskOK := d.collector.SampleDisk()
 	now := time.Now().Unix()
 
 	d.mu.Lock()
 	m := d.current
 
-	if memOK {
-		m.SysMemUsedKB = usedBytes / 1024
-		m.SysMemTotalKB = totalBytes / 1024
-		m.SysMemOK = true
-		m.SysMemSampledAt = now
-		m.SysMemStale = false
-		m.SysMemUsed = collector.FormatMemoryMB(m.SysMemUsedKB)
-		m.SysMemTotal = collector.FormatMemoryMB(m.SysMemTotalKB)
-	} else {
-		m.SysMemStale = true
-	}
-
 	if diskOK {
 		m.DiskUsedKB = diskUsed
 		m.DiskTotalKB = diskTotal
+		m.DiskAvailableKB = diskAvail
 		m.DiskOK = true
 		m.DiskSampledAt = now
 		m.DiskStale = false
