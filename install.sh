@@ -122,7 +122,7 @@ EOF
   printf 'installed systemd user service: %s\n' "$SYSTEMD_UNIT"
 }
 
-# Stop any running daemon before upgrading.
+# Stop any running daemon before re-registering the service.
 # Tries the newly built binary first, then the installed symlink.
 stop_daemon() {
   local candidates=("$DEST/bin/beacon" "$PREFIX/bin/beacon")
@@ -163,10 +163,10 @@ fi
 
 ln -sfn "$DEST/bin/beacon" "$PREFIX/bin/beacon"
 
-# Stop any running daemon (old or new binary) before re-registering service.
+# Stop any running daemon before re-registering service.
 stop_daemon
 
-# Install daemon service.
+# Install daemon service (bootout/bootstrap handles start, no manual start).
 install_launchd
 install_systemd
 

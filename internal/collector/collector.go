@@ -20,6 +20,7 @@ package collector
 
 import (
 	"bufio"
+	"context"
 	"os"
 	"os/exec"
 	"regexp"
@@ -132,12 +133,11 @@ var procCountPattern = regexp.MustCompile(`Processes:\s*(\d+)\s+total,`)
 const commandTimeout = 5 * time.Second
 
 // runCommand runs a command with a bounded timeout and returns its stdout.
+// Uses context cancellation so the kill is race-free with Cmd.Start.
 func runCommand(name string, args ...string) ([]byte, error) {
-	cmd := exec.Command(name, args...)
-	timer := time.AfterFunc(commandTimeout, func() {
-		_ = cmd.Process.Kill()
-	})
-	defer timer.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
 	return cmd.Output()
 }
 
