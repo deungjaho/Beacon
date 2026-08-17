@@ -580,6 +580,24 @@ func TestParseMacOSIOStatCPU(t *testing.T) {
 	}
 }
 
+func TestParseMacOSIOStatCPUMultiDisk(t *testing.T) {
+	// Real iostat -c 2 -w 1 output on a Mac with two disks (disk0, disk4).
+	// The CPU columns are shifted right by 3 positions compared to the
+	// single-disk case; the parser must locate "us" dynamically.
+	input := "              disk0               disk4       cpu    load average\n" +
+		"    KB/t  tps  MB/s     KB/t  tps  MB/s  us sy id   1m   5m   15m\n" +
+		"   15.04  181  2.66    73.70    0  0.02   4  4 92  2.80 2.55 2.52\n" +
+		"   19.04 7719 143.51     0.00    0  0.00  41 27 32  2.80 2.55 2.52\n"
+	cpu, ok := parseMacOSIOStatCPU(input)
+	if !ok {
+		t.Fatalf("parse failed")
+	}
+	// Second sample: us=41, sy=27 → 68.
+	if cpu != 68 {
+		t.Fatalf("CPU: got %.0f want 68", cpu)
+	}
+}
+
 func TestParseMacOSIOStatCPUShortOutput(t *testing.T) {
 	// Only header, no data lines.
 	input := "          disk0       cpu    load average\n" +

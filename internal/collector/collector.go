@@ -162,35 +162,56 @@ func parseMacOSCPUUsageTotal(output string) (float64, bool) {
 }
 
 // parseMacOSIOStatCPU parses `iostat -c 2 -w 1` output and returns
-// us+sy from the second sample. The output has a header line, a first
-// data line, and a second data line. The CPU columns are us, sy, id
-// (positions 4, 5, 6 in the data row after disk columns).
+// us+sy from the second sample. The output has a header line, a column
+// header line, a first data line, and a second data line. The number of
+// disk columns varies by machine (one per disk), so the CPU columns
+// (us, sy, id) are located dynamically by scanning the column header
+// line for "us".
 //
-// Example output:
+// Example output (single disk):
 //
 //	           disk0       cpu    load average
 //	 KB/t  tps  MB/s  us sy id   1m   5m   15m
 //	14.78  347  5.01  12 11 78  13.22 12.80 8.56
 //	39.66 1380 53.44  14 11 75  13.22 12.80 8.56
 //
-// We parse the last data line and extract us+sy.
+// Example output (multiple disks):
+//
+//	           disk0               disk4       cpu    load average
+//	 KB/t  tps  MB/s     KB/t  tps  MB/s  us sy id   1m   5m   15m
+//	15.04  181  2.66    73.70    0  0.02   4  4 92  2.80 2.55 2.52
+//	19.04 7719 143.51     0.00    0  0.00  41 27 32  2.80 2.55 2.52
+//
+// We locate the "us" column in the column-header line, then parse the
+// last data line at the same index (us) and index+1 (sy).
 func parseMacOSIOStatCPU(output string) (float64, bool) {
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	if len(lines) < 4 {
 		return 0, false
 	}
+	// Line 1 is the column header: "KB/t tps MB/s ... us sy id 1m 5m 15m".
+	headerFields := strings.Fields(lines[1])
+	usIdx := -1
+	for i, f := range headerFields {
+		if f == "us" {
+			usIdx = i
+			break
+		}
+	}
+	if usIdx < 0 {
+		return 0, false
+	}
 	// The last line is the second sample.
 	lastLine := strings.TrimSpace(lines[len(lines)-1])
 	fields := strings.Fields(lastLine)
-	if len(fields) < 6 {
+	if len(fields) < usIdx+2 {
 		return 0, false
 	}
-	// CPU columns are us(4th), sy(5th), id(6th) — 0-indexed: 3, 4, 5.
-	us, err := strconv.ParseFloat(fields[3], 64)
+	us, err := strconv.ParseFloat(fields[usIdx], 64)
 	if err != nil {
 		return 0, false
 	}
-	sy, err := strconv.ParseFloat(fields[4], 64)
+	sy, err := strconv.ParseFloat(fields[usIdx+1], 64)
 	if err != nil {
 		return 0, false
 	}
