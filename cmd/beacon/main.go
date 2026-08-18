@@ -786,12 +786,10 @@ func cmdHook(args []string) int {
 		if msg == "" {
 			msg = "completed"
 		}
-		runReport("completed", msg, cwd)
-		agentName := os.Getenv("BEACON_AGENT_NAME")
-		if agentName == "" {
-			agentName = "Claude"
-		}
-		runNotify(agentName, "✓ "+msg)
+		cleanMsg := state.StripMarkdown(msg)
+		cleanMsg = state.SanitizeSummary(cleanMsg)
+		runReport("completed", cleanMsg, cwd)
+		runNotify(detectAgentName(), "✓ "+cleanMsg)
 	case "notification":
 		msg := strVal("message")
 		if msg == "" {
@@ -800,12 +798,10 @@ func cmdHook(args []string) int {
 		if msg == "" {
 			msg = "Agent is waiting"
 		}
-		runReport("waiting", msg, cwd)
-		agentName := os.Getenv("BEACON_AGENT_NAME")
-		if agentName == "" {
-			agentName = "Claude"
-		}
-		runNotify(agentName, "⚠ "+msg)
+		cleanMsg := state.StripMarkdown(msg)
+		cleanMsg = state.SanitizeSummary(cleanMsg)
+		runReport("waiting", cleanMsg, cwd)
+		runNotify(detectAgentName(), "⚠ "+cleanMsg)
 	case "permission":
 		tool := strVal("tool_name")
 		if tool == "" {
@@ -815,12 +811,10 @@ func cmdHook(args []string) int {
 			tool = "operation"
 		}
 		msg := "Permission required: " + tool
-		runReport("waiting", msg, cwd)
-		agentName := os.Getenv("BEACON_AGENT_NAME")
-		if agentName == "" {
-			agentName = "Codex"
-		}
-		runNotify(agentName, msg)
+		cleanMsg := state.StripMarkdown(msg)
+		cleanMsg = state.SanitizeSummary(cleanMsg)
+		runReport("waiting", cleanMsg, cwd)
+		runNotify(detectAgentName(), cleanMsg)
 	}
 	return 0
 }
@@ -1094,4 +1088,18 @@ func cmdDoctor(args []string) int {
 		fmt.Println("info    outside-tmux")
 	}
 	return failed
+}
+
+// detectAgentName determines the agent name from environment variables.
+func detectAgentName() string {
+	if name := os.Getenv("BEACON_AGENT_NAME"); name != "" {
+		return name
+	}
+	if os.Getenv("CODEX_THREAD_ID") != "" || os.Getenv("CODEX_CI") != "" {
+		return "Codex"
+	}
+	if os.Getenv("CLAUDE_CODE_ENTRYPOINT") != "" {
+		return "Claude"
+	}
+	return "Agent"
 }

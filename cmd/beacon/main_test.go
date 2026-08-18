@@ -1311,3 +1311,63 @@ func TestJumpUsesSwitchClientWithC(t *testing.T) {
 	assertContains(t, logStr, "/dev/ttys000", "switch-client must target the client tty")
 	assertContains(t, logStr, "test-session", "switch-client must target the session")
 }
+
+
+func TestDetectAgentName(t *testing.T) {
+	// 1. Explicit BEACON_AGENT_NAME takes precedence
+	t.Setenv("BEACON_AGENT_NAME", "CustomAgent")
+	t.Setenv("CODEX_THREAD_ID", "thread-123")
+	t.Setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+	if got := detectAgentName(); got != "CustomAgent" {
+		t.Fatalf("detectAgentName with BEACON_AGENT_NAME: got %q, want %q", got, "CustomAgent")
+	}
+
+	// 2. CODEX_THREAD_ID detects Codex
+	t.Setenv("BEACON_AGENT_NAME", "")
+	t.Setenv("CODEX_THREAD_ID", "thread-123")
+	t.Setenv("CLAUDE_CODE_ENTRYPOINT", "")
+	if got := detectAgentName(); got != "Codex" {
+		t.Fatalf("detectAgentName with CODEX_THREAD_ID: got %q, want %q", got, "Codex")
+	}
+
+	// 3. CODEX_CI detects Codex
+	t.Setenv("CODEX_THREAD_ID", "")
+	t.Setenv("CODEX_CI", "1")
+	if got := detectAgentName(); got != "Codex" {
+		t.Fatalf("detectAgentName with CODEX_CI: got %q, want %q", got, "Codex")
+	}
+
+	// 4. CLAUDE_CODE_ENTRYPOINT detects Claude
+	t.Setenv("CODEX_CI", "")
+	t.Setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+	if got := detectAgentName(); got != "Claude" {
+		t.Fatalf("detectAgentName with CLAUDE_CODE_ENTRYPOINT: got %q, want %q", got, "Claude")
+	}
+
+	// 5. Default fallback to Agent
+	t.Setenv("CLAUDE_CODE_ENTRYPOINT", "")
+	if got := detectAgentName(); got != "Agent" {
+		t.Fatalf("detectAgentName fallback: got %q, want %q", got, "Agent")
+	}
+}
+
+func TestHookSanitizesMarkdownSummary(t *testing.T) {
+	te := newTestEnv(t)
+	te.run("reset")
+	cmd := exec.Command(te.bin, "hook", "stop")
+	cmd.Env = append(te.env(), "TMUX_PANE=%1", "BEACON_NOW=100", "CODEX_THREAD_ID=test")
+	cmd.Stdin = strings.NewReader(`{"last_assistant_message":"**修复完成**：更新了 ` + "`main.go`" + ` 文件"}`)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hook stop: %v\n%s", err, out)
+	}
+	st := te.loadState()
+	rec := st.Panes["%1"]
+	if rec.Status != "completed" {
+		t.Fatalf("hook stop should mark completed: got %q", rec.Status)
+	}
+	wantSummary := "修复完成：更新了 main.go 文件"
+	if rec.Summary != wantSummary {
+		t.Fatalf("hook stop summary: got %q, want %q", rec.Summary, wantSummary)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -303,30 +304,68 @@ func (s *Store) Reset() error {
 	return s.save(defaultState())
 }
 
+var (
+	reCodeBlock    = regexp.MustCompile("(?s)```[a-zA-Z0-9_-]*\n?(.*?)```\n?")
+	reInlineCode   = regexp.MustCompile("`([^`\n]+)`")
+	reLeftoverTick = regexp.MustCompile("`+")
+	reImg          = regexp.MustCompile(`!\[([^\]]*)\]\([^)]*\)`)
+	reLink         = regexp.MustCompile(`\[([^\]]+)\]\([^)]*\)`)
+	reRefLink      = regexp.MustCompile(`\[([^\]]+)\]\[[^\]]*\]`)
+	reHTML         = regexp.MustCompile(`<[^>]+>`)
+	reHeader       = regexp.MustCompile(`(?m)^[ \t]*#{1,6}[ \t]*`)
+	reQuote        = regexp.MustCompile(`(?m)^[ \t]*>[ \t]*`)
+	reListBullet   = regexp.MustCompile(`(?m)^[ \t]*[-*+][ \t]+`)
+	reListNum      = regexp.MustCompile(`(?m)^[ \t]*\d+\.[ \t]+`)
+	reHR           = regexp.MustCompile(`(?m)^[ \t]*[-*_]{3,}[ \t]*$`)
+	reBoldStar     = regexp.MustCompile(`\*{2,}(.*?)\*{2,}`)
+	reBoldUnder    = regexp.MustCompile(`_{2,}(.*?)_{2,}`)
+	reItalicStar   = regexp.MustCompile(`\*(.*?)\*`)
+	reStrike       = regexp.MustCompile(`~~(.*?)~~`)
+)
+
+// StripMarkdown removes common Markdown formatting syntax from a string.
+func StripMarkdown(s string) string {
+	s = reCodeBlock.ReplaceAllString(s, "$1")
+	s = reImg.ReplaceAllString(s, "$1")
+	s = reLink.ReplaceAllString(s, "$1")
+	s = reRefLink.ReplaceAllString(s, "$1")
+	s = reHTML.ReplaceAllString(s, "")
+	s = reHeader.ReplaceAllString(s, "")
+	s = reQuote.ReplaceAllString(s, "")
+	s = reListBullet.ReplaceAllString(s, "")
+	s = reListNum.ReplaceAllString(s, "")
+	s = reHR.ReplaceAllString(s, "")
+	s = reBoldStar.ReplaceAllString(s, "$1")
+	s = reBoldUnder.ReplaceAllString(s, "$1")
+	s = reItalicStar.ReplaceAllString(s, "$1")
+	s = reStrike.ReplaceAllString(s, "$1")
+	s = reInlineCode.ReplaceAllString(s, "$1")
+	s = reLeftoverTick.ReplaceAllString(s, "")
+	return s
+}
+
 // SanitizeSummary collapses whitespace and truncates to 80 characters.
 func SanitizeSummary(s string) string {
-	var out []byte
+	s = StripMarkdown(s)
+	var out []rune
 	prevSpace := false
 	for _, r := range s {
 		switch r {
-		case '\r', '\n', '\t':
-			if !prevSpace {
-				out = append(out, ' ')
-				prevSpace = true
-			}
-		case ' ':
-			if !prevSpace {
+		case '\r', '\n', '\t', ' ':
+			if !prevSpace && len(out) > 0 {
 				out = append(out, ' ')
 				prevSpace = true
 			}
 		default:
-			out = append(out, []byte(string(r))...)
+			out = append(out, r)
 			prevSpace = false
 		}
 	}
-	result := string(out)
-	if len(result) > 80 {
-		result = result[:80]
+	for len(out) > 0 && out[len(out)-1] == ' ' {
+		out = out[:len(out)-1]
 	}
-	return result
+	if len(out) > 80 {
+		out = out[:80]
+	}
+	return string(out)
 }

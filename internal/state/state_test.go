@@ -202,3 +202,50 @@ func TestStoreLoadHandlesCorruptFile(t *testing.T) {
 		t.Fatalf("corrupt file should yield default: %v", state)
 	}
 }
+
+
+func TestStripMarkdown(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "bold and inline code",
+			in:   "**简短精炼**：控制在 15 字以内的单一短句（如 `已修复并验证配置同步`），不使用 Markdown 格式。",
+			want: "简短精炼：控制在 15 字以内的单一短句（如 已修复并验证配置同步），不使用 Markdown 格式。",
+		},
+		{
+			name: "headers and lists",
+			in:   "# Title\n- item 1\n* item 2\n1. item 3",
+			want: "Title\nitem 1\nitem 2\nitem 3",
+		},
+		{
+			name: "links and images",
+			in:   "See [documentation](https://example.com) and ![logo](img.png)",
+			want: "See documentation and logo",
+		},
+		{
+			name: "code blocks and strikethrough",
+			in:   "```go\nfmt.Println(1)\n```\n~~deprecated~~",
+			want: "fmt.Println(1)\ndeprecated",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := StripMarkdown(tt.in)
+			if got != tt.want {
+				t.Fatalf("StripMarkdown(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSanitizeSummaryStripsMarkdownAndTruncates(t *testing.T) {
+	in := "**简短精炼**：控制在 15 字以内的单一短句（如 `已修复并验证配置同步`），不使用 Markdown 格式。"
+	got := SanitizeSummary(in)
+	want := "简短精炼：控制在 15 字以内的单一短句（如 已修复并验证配置同步），不使用 Markdown 格式。"
+	if got != want {
+		t.Fatalf("SanitizeSummary = %q, want %q", got, want)
+	}
+}
